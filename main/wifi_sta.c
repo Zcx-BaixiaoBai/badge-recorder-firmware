@@ -27,8 +27,9 @@ static bool s_stack_up;     // netif_init/事件循环/netif/回调（开机一�
 static bool s_drv_up;       // esp_wifi_init 驱动存活
 static bool s_radio_up;     // esp_wifi_start 无线电存活
 static bool s_wifi_init_failed;   // esp_wifi_init NO_MEM：允许之后重试
-static char s_ssid[33];
-static char s_pass[65];
+// 尺寸与 wifi_sta_config_t 字段一致（32/64）：避免 format-truncation 告警
+static char s_ssid[32];
+static char s_pass[64];
 
 static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
