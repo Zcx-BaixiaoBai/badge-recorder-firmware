@@ -30,7 +30,11 @@
 static const char *TAG = "recupload";
 
 #define MAX_BATCH     16            // 单轮最多处理的段数（>80 分钟积压，足够）
-#define READ_CHUNK    1024
+// ★ 必须整 MSS（>1440B）：lwIP 默认 Nagle + 服务端延迟 ACK——1KB 小块写
+//   每块等一次 RTT，178KB 段要 60s+（真机实测撞 timeout）。1460 = 整段
+//   直发，Nagle 不触发。v0.4.26 的 2048 本来是对的，v0.4.27 降到 1KB
+//   时引入此回归。
+#define READ_CHUNK    1460
 
 static TaskHandle_t s_task;
 static char s_device_id[24];        // "badge-<12 hex>"
@@ -78,7 +82,7 @@ static esp_err_t upload_one(const frec_seg_info_t *seg)
     esp_http_client_config_t cfg = {
         .url = url,
         .method = HTTP_METHOD_POST,
-        .timeout_ms = 60000,
+        .timeout_ms = 120000,       // 大段兜底（MSS 写正常 ~1-2s/段）
         .buffer_size = 512,
         .buffer_size_tx = READ_CHUNK,
         .disable_auto_redirect = true,
