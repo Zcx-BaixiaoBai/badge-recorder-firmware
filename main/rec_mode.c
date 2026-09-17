@@ -220,6 +220,30 @@ esp_err_t rec_mode_start(void)
         return ESP_FAIL;
     }
 
+    // --- 一次性四配置探测（定位 esp_opus_enc 在 C3 上的失败条件） ---
+    {
+        struct { const char *tag; esp_opus_enc_config_t cfg; } probes[] = {
+            { "8k/stereo/20ms/VOIP", { .sample_rate=8000, .channel=2, .bits_per_sample=16,
+              .bitrate=90000, .frame_duration=ESP_OPUS_ENC_FRAME_DURATION_20_MS,
+              .application_mode=ESP_OPUS_ENC_APPLICATION_VOIP, .complexity=0 } },
+            { "16k/mono/20ms/VOIP", { .sample_rate=16000, .channel=1, .bits_per_sample=16,
+              .bitrate=16000, .frame_duration=ESP_OPUS_ENC_FRAME_DURATION_20_MS,
+              .application_mode=ESP_OPUS_ENC_APPLICATION_VOIP, .complexity=0 } },
+            { "16k/mono/60ms/VOIP", { .sample_rate=16000, .channel=1, .bits_per_sample=16,
+              .bitrate=16000, .frame_duration=ESP_OPUS_ENC_FRAME_DURATION_60_MS,
+              .application_mode=ESP_OPUS_ENC_APPLICATION_VOIP, .complexity=0 } },
+            { "16k/mono/60ms/AUDIO", { .sample_rate=16000, .channel=1, .bits_per_sample=16,
+              .bitrate=16000, .frame_duration=ESP_OPUS_ENC_FRAME_DURATION_60_MS,
+              .application_mode=ESP_OPUS_ENC_APPLICATION_AUDIO, .complexity=0 } },
+        };
+        for (size_t i = 0; i < sizeof(probes)/sizeof(probes[0]); i++) {
+            void *probe_hd = NULL;
+            esp_audio_err_t pr = esp_opus_enc_open(&probes[i].cfg, sizeof(esp_opus_enc_config_t), &probe_hd);
+            ESP_LOGW(TAG, "探测[%s] ret=%d hd=%p", probes[i].tag, (int)pr, probe_hd);
+            if (probe_hd) esp_opus_enc_close(probe_hd);
+        }
+    }
+
     esp_opus_enc_config_t cfg = {
         .sample_rate      = ENC_RATE,
         .channel          = 1,
