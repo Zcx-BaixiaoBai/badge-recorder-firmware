@@ -50,19 +50,26 @@ static const char *TAG = "recmode";
 // ---- 参数 ----
 #define CAP_RATE        24000       // ES8311 ADC 时钟要求的采集率（勿改，见 audio_pipe.c）
 #define ENC_RATE        16000
-#define FRAME_MS        60
-#define SAMPLES_IN      (CAP_RATE * FRAME_MS / 1000)     // 1440
-#define SAMPLES_OUT     (ENC_RATE * FRAME_MS / 1000)     // 960
-#define BYTES_IN        (SAMPLES_IN * 2)                 // 2880
-#define BYTES_OUT       (SAMPLES_OUT * 2)                // 1920
-#define FRAMES_PER_SEG  (300000 / FRAME_MS)              // 5000 = 5 分钟一段
-#define SESSION_FRAMES  (1800 * 1000 / FRAME_MS)         // 30000 = 30 分钟一节
+// ★ v0.4.31：帧长 60ms→20ms。原因：libopus 编码栈深随帧长缩（60ms 实测
+//   ~14KB，16KB 任务栈在 deinit 后的碎片堆上分配失败——最大连续块仅 14848B，
+//   空闲堆却有 38.3KB）；20ms 是 opus 标准帧长（嵌入式典型栈 4-6KB），FREC
+//   头自带 frame_ms，服务端解析按头部值，天然兼容。代价：帧头开销
+//   50 帧/s×2B=100B/s（码率 2KB/s 的 5%）。
+#define FRAME_MS        20
+#define SAMPLES_IN      (CAP_RATE * FRAME_MS / 1000)     // 480
+#define SAMPLES_OUT     (ENC_RATE * FRAME_MS / 1000)     // 320
+#define BYTES_IN        (SAMPLES_IN * 2)                 // 960
+#define BYTES_OUT       (SAMPLES_OUT * 2)                // 640
+#define FRAMES_PER_SEG  (300000 / FRAME_MS)              // 15000 = 5 分钟一段
+#define SESSION_FRAMES  (1800 * 1000 / FRAME_MS)         // 90000 = 30 分钟一节
 #define ST7789_SLPIN    0x10
 #define ST7789_SLPOUT   0x11
 #define SYNC_IP_WAIT_SEC  20                              // 同步窗口等 IP
 #define SYNC_DRAIN_MS     (4 * 60000)                     // 同步窗口排空上限
 #define PEND_GUARD_BYTES  (900 * 1024)                    // 遗留待传超过即拒开新节
                                                 //（一节 3.66MB + 遗留 ≤0.9MB < 4.625MiB 环）
+#define REC_STACK_BYTES   12288                           // 12KB：20ms 帧的编码栈 +
+                                                // 裕量；分配失败会打 largest-block 日志
 
 // 28 抽汉明窗低通（截止 7.2kHz@24k，阻带 8.2k 起 -26dB → 9k -60dB），Q14。
 // 生成方式：windowed-sinc，fc=7200/24000，汉明窗，归一化后量化。
@@ -265,10 +272,11 @@ static esp_err_t start_capture(void)
     }
 
     s_run = true;
-    // ★ 16KB 大块优先分配（first-fit 堆：小任务先建会把最大洞啃掉一角）。
-    //   libopus 编码实测栈深 ~14KB（v0.4.28 真机 Stack protection fault）。
-    //   rec_task 起跑前等 s_audio_ready 门槛。
-    if (xTaskCreate(rec_task, "rec_task", 16384, NULL, 5, NULL) != pdPASS) {
+    // ★ 大块优先分配（first-fit 堆：小任务先建会把最大洞啃掉一角）。
+    //   栈深依据：60ms 帧实测 ~14KB（v0.4.28 Stack protection fault）；20ms 帧
+    //   是 opus 标准形态（嵌入式典型 4-6KB）→ 12KB 任务栈。rec_task 起跑前
+    //   等 s_audio_ready 门槛（先建本任务后起采集）。
+    if (xTaskCreate(rec_task, "rec_task", REC_STACK_BYTES, NULL, 5, NULL) != pdPASS) {
         s_run = false;
         frec_seg_end();
         snprintf(s_err, sizeof(s_err), "录音任务创建失败（堆碎片？）");
@@ -329,7 +337,7 @@ esp_err_t rec_mode_init(void)
         .channel          = 1,
         .bits_per_sample  = 16,
         .bitrate          = 16000,
-        .frame_duration   = ESP_OPUS_ENC_FRAME_DURATION_60_MS,
+        .frame_duration   = ESP_OPUS_ENC_FRAME_DURATION_20_MS,
         .application_mode = ESP_OPUS_ENC_APPLICATION_VOIP,
         .complexity       = 0,
         .enable_fec       = false,

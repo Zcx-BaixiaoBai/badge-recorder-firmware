@@ -54,6 +54,10 @@ run_firmware_checks() (
     install -m 0644 \
         "${validation_build_dir}/FoloToy-AI-Passport-full.bin" \
         "${repo_root}/build/FoloToy-AI-Passport-full.bin"
+    # ELF 随 full.bin 一起进 artifact：真机崩溃可 addr2line 符号化
+    install -m 0644 \
+        "${validation_build_dir}/FoloToy-AI-Passport.elf" \
+        "${repo_root}/build/FoloToy-AI-Passport.elf"
     echo "Firmware build: PASS"
 )
 
