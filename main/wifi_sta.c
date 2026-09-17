@@ -12,6 +12,7 @@ static const char *TAG = "wifi_sta";
 static EventGroupHandle_t s_eg;
 static const int BIT_IP = BIT0;
 static bool s_started;
+static bool s_wifi_init_failed;   // esp_wifi_init NO_MEM：允许重试（badge_worker 心跳里再来）
 static bool s_radio_up;   // 无线电占空比：wifi_sta_stop 置 false、resume 置 true
 
 static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data)
@@ -42,7 +43,12 @@ void wifi_sta_start(const char *ssid, const char *pass)
 
     wifi_init_config_t init = WIFI_INIT_CONFIG_DEFAULT();
     ESP_LOGI(TAG, "esp_wifi_init 前空闲堆 %u B", (unsigned)esp_get_free_heap_size());
-    ESP_ERROR_CHECK(esp_wifi_init(&init));
+    // NO_MEM 不 abort（boot loop 会锁死调试路径）：记状态，UI 层提示，可重试
+    if (esp_wifi_init(&init) != ESP_OK) {
+        ESP_LOGE(TAG, "esp_wifi_init 失败（堆不足）——WiFi 本轮不可用，60s 后重试");
+        s_wifi_init_failed = true;
+        return;
+    }
     ESP_ERROR_CHECK(esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, on_event, NULL, NULL));
     ESP_ERROR_CHECK(esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP, on_event, NULL, NULL));
 
