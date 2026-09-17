@@ -575,7 +575,7 @@ void app_main(void)
         ESP_LOGW(TAG, "录音不可用（Opus 编码器开机预开失败，其余功能正常）");
     }
 
-    xTaskCreate(badge_worker, "badge_worker", 12288, NULL, 5, NULL);
+    xTaskCreate(badge_worker, "badge_worker", 8192, NULL, 5, NULL);
     badge_console_start();           // USB 控制台（COM 口 REPL：rec-start/rec-stop/batt/kick…）
     ESP_LOGI(TAG, "worker 已启动，网关=%s", g_cfg.gw_url);
 }

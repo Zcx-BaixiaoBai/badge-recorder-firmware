@@ -23,10 +23,9 @@ CONFIG_LV_COLOR_DEPTH_16=y
 CONFIG_LV_FONT_MONTSERRAT_14=y
 CONFIG_LV_FONT_MONTSERRAT_20=y
 # LVGL 内置 malloc 池大小(KB)。它是独立静态区、不与系统堆共享,配大了会白白占用 RAM。
-# 本产品以录音为主，界面简单；24KB 足够。把系统堆省给 FAT 挂载 + Opus 编码器
-# （实测 48KB 池时空闲堆仅 ~21KB，recordings 分区挂载 ESP_ERR_NO_MEM）。
-# 若自建复杂界面出现绘制卡死/看门狗,再调回。
-CONFIG_LV_MEM_SIZE_KILOBYTES=24
+# 本产品界面为文本列表；16KB 够用。RAM 预算（v0.4.18 实测）：
+#   编码器开机持有 25KB → WiFi init 需 ~37KB，池 24KB 时 boot loop，16KB 通过。
+CONFIG_LV_MEM_SIZE_KILOBYTES=16
 
 # --- 系统 ---
 CONFIG_FREERTOS_HZ=1000
