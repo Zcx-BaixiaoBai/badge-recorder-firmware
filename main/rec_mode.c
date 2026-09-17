@@ -232,8 +232,13 @@ esp_err_t rec_mode_start(void)
         .enable_dtx       = false,
         .enable_vbr       = false,
     };
-    if (esp_opus_enc_open(&cfg, sizeof(cfg), &s_enc) != ESP_AUDIO_ERR_OK || !s_enc) {
-        snprintf(s_err, sizeof(s_err), "Opus 编码器创建失败");
+    // 注册路径（esp_audio_codec 文档：先 register 再 open；直接 open 在部分
+    // 版本会 ESP_AUDIO_ERR_NOT_SUPPORT(-7)——真机 v0.4.12 实测）
+    esp_opus_enc_register();
+    esp_audio_err_t oe = esp_opus_enc_open(&cfg, sizeof(cfg), &s_enc);
+    if (oe != ESP_AUDIO_ERR_OK || !s_enc) {
+        snprintf(s_err, sizeof(s_err), "Opus 编码器创建失败(ret=%d)", (int)oe);
+        ESP_LOGE(TAG, "esp_opus_enc_open ret=%d（-2=内存 -7=未注册/不支持）", (int)oe);
         return ESP_FAIL;
     }
     ESP_LOGI(TAG, "Opus 编码器就绪（编码器后空闲堆 %u B）", (unsigned)esp_get_free_heap_size());
