@@ -100,7 +100,8 @@ static void recover_unfinalized(void)
         h.frame_count = frames;
         if (fseek(f, 0, SEEK_SET) == 0) fwrite(&h, 1, sizeof(h), f);
         fclose(f);
-        ESP_LOGW(TAG, "掉电恢复 %s：回填 %u 帧 %uB", ent->d_name, frames, payload);
+        ESP_LOGW(TAG, "掉电恢复 %.16s：回填 %u 帧 %uB", ent->d_name,
+                 (unsigned)frames, (unsigned)payload);
     }
     closedir(d);
 }
@@ -130,7 +131,7 @@ bool frec_store_is_active(const char *fname)
 {
     if (!s_fp || !fname) return false;
     char cur[16];
-    snprintf(cur, sizeof(cur), "R%07u.FRC", s_seq);
+    snprintf(cur, sizeof(cur), "R%07u.FRC", (unsigned)s_seq);
     return strcmp(cur, fname) == 0;
 }
 
@@ -151,10 +152,10 @@ esp_err_t frec_seg_begin(uint64_t start_ts_ms, uint32_t *seq_out)
         static uint32_t s_fallback;
         s_fallback += 1;
         s_seq = s_fallback;
-        ESP_LOGW(TAG, "NVS seq 分配失败，退化为内存计数 %u", s_seq);
+        ESP_LOGW(TAG, "NVS seq 分配失败，退化为内存计数 %u", (unsigned)s_seq);
     }
     char path[64];
-    snprintf(path, sizeof(path), MOUNT_POINT "/R%07u.FRC", s_seq);
+    snprintf(path, sizeof(path), "/rec/R%07u.FRC", (unsigned)s_seq);
     s_fp = fopen(path, "wb");
     if (!s_fp) {
         ESP_LOGE(TAG, "创建 %s 失败（分区满？）", path);
@@ -171,7 +172,8 @@ esp_err_t frec_seg_begin(uint64_t start_ts_ms, uint32_t *seq_out)
         return ESP_FAIL;
     }
     if (seq_out) *seq_out = s_seq;
-    ESP_LOGI(TAG, "段 R%07u 开始（start_ts=%llu ms）", s_seq, start_ts_ms);
+    ESP_LOGI(TAG, "段 R%07u 开始（start_ts=%llu ms）",
+             (unsigned)s_seq, (unsigned long long)start_ts_ms);
     return ESP_OK;
 }
 
@@ -200,7 +202,7 @@ esp_err_t frec_seg_end(void)
 {
     if (!s_fp) return ESP_ERR_INVALID_STATE;
     if (wbuf_flush() != ESP_OK) {
-        ESP_LOGE(TAG, "段 R%07u flush 失败", s_seq);
+        ESP_LOGE(TAG, "段 R%07u flush 失败", (unsigned)s_seq);
         fclose(s_fp);
         s_fp = NULL;
         return ESP_FAIL;
@@ -216,10 +218,11 @@ esp_err_t frec_seg_end(void)
     hdr_fill(&h, start_ts, 1);
     rewind(s_fp);
     if (fwrite(&h, 1, sizeof(h), s_fp) != sizeof(h)) {
-        ESP_LOGE(TAG, "段 R%07u 回填头部失败", s_seq);
+        ESP_LOGE(TAG, "段 R%07u 回填头部失败", (unsigned)s_seq);
     }
     fclose(s_fp);
     s_fp = NULL;
-    ESP_LOGI(TAG, "段 R%07u 完成：%u 帧 %uB", s_seq, s_frames, s_payload);
+    ESP_LOGI(TAG, "段 R%07u 完成：%u 帧 %uB",
+             (unsigned)s_seq, (unsigned)s_frames, (unsigned)s_payload);
     return ESP_OK;
 }

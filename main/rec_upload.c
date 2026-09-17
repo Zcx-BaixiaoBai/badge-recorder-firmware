@@ -83,7 +83,7 @@ static bool parse_seg_name(const char *s, uint32_t *seq_out)
 static bool seg_is_active(uint32_t seq)
 {
     char cur[16];
-    snprintf(cur, sizeof(cur), "R%07u.FRC", seq);
+    snprintf(cur, sizeof(cur), "R%07u.FRC", (unsigned)seq);
     return frec_store_is_active(cur);
 }
 
@@ -129,9 +129,9 @@ static int flush_pending(void)
     for (int i = 0; i < n; i++) {
         uint32_t seq = seqs[i];                // 局部变量：路径只由它派生
         char path[64];
-        snprintf(path, sizeof(path), "/rec/R%07u.FRC", seq);
+        snprintf(path, sizeof(path), "/rec/R%07u.FRC", (unsigned)seq);
         char seg_id[16];
-        snprintf(seg_id, sizeof(seg_id), "R%07u", seq);
+        snprintf(seg_id, sizeof(seg_id), "R%07u", (unsigned)seq);
 
         FILE *f = fopen(path, "rb");
         if (!f) continue;
