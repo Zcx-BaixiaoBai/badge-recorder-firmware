@@ -1,8 +1,11 @@
 ## main/idf_component.yml —— 主组件的托管依赖。
 ##
-## esp_audio_codec 提供 esp_opus_enc（定点 Opus 编码，C3 已被官方录音笔固件
-## folo_recorder_c3 与 xiaozhi-esp32 的多个 C3 板验证）。fatfs / wear_levelling
-## 是 IDF 内置组件，在 main/CMakeLists.txt 的 REQUIRES 里声明，不在此重复。
+## - esp_audio_codec：esp_opus_enc（定点 Opus；C3 已被官方录音笔固件与 xiaozhi 验证）
+## - linenoise / argtable3：esp_console REPL 所需；IDF 5.5 起移出核心组件，
+##   由应用侧以托管组件提供（对齐 IDF 官方 console 示例的做法）。
+## fatfs / wear_levelling / console 是 IDF 内置组件，在 CMakeLists REQUIRES 声明。
 dependencies:
   espressif/esp_audio_codec: "^2.5.0"
+  espressif/linenoise: "^1.0.0"
+  espressif/argtable3: "^3.2.2"
   idf: ">=5.5.3,<5.6.0"

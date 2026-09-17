@@ -18,5 +18,5 @@ idf_component_register(
     REQUIRES bsp esp_event esp_hw_support esp_netif esp_timer esp_wifi nvs_flash
              esp_http_client esp_http_server json
              fatfs wear_levelling
-             console linenoise argtable
+             console
 )
