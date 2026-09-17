@@ -236,6 +236,7 @@ esp_err_t rec_mode_start(void)
         snprintf(s_err, sizeof(s_err), "Opus 编码器创建失败");
         return ESP_FAIL;
     }
+    ESP_LOGI(TAG, "Opus 编码器就绪（编码器后空闲堆 %u B）", (unsigned)esp_get_free_heap_size());
     int in_size = 0, out_size = 0;
     esp_opus_enc_get_frame_size(s_enc, &in_size, &out_size);
     if (in_size != BYTES_OUT) {
