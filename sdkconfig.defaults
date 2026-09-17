@@ -30,6 +30,12 @@ CONFIG_LV_MEM_SIZE_KILOBYTES=12
 # --- 系统 ---
 CONFIG_FREERTOS_HZ=1000
 
+# --- 编译优化：-O2（Performance）---
+# ★ v0.4.36 根因修复：IDF 默认是 -Og（Debug），调用链每层栈帧虚胖——
+# 真机符号化 5 轮追凶的 opus "16KB 栈"其实是 -Og 产物（libopus -O2 嵌入式
+# 典型 4-8KB）。silk 链实测 -Og 下 15.9KB > 借栈洞 14.95KB，恒崩。
+CONFIG_COMPILER_OPTIMIZATION_PERF=y
+
 # --- Bluetooth LE / NimBLE ---
 # 录音产品不用 BLE（省静态 RAM）。共平台的 ZCode 固件需要时再开。
 CONFIG_BT_ENABLED=n

@@ -270,7 +270,6 @@ static esp_err_t start_capture(void)
              s_mode == REC_MODE_AUTO ? "续录" : "手动",
              (unsigned)esp_get_free_heap_size(),
              (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
-    heap_caps_dump(MALLOC_CAP_INTERNAL);     // 诊断：全部空闲块布局（洞被谁围着）
 
     esp_opus_enc_reset(s_enc);               // 复用编码器：状态清零
     resample_reset();
@@ -284,16 +283,28 @@ static esp_err_t start_capture(void)
     }
 
     s_run = true;
-    // ★ 栈缓冲"借"自 deinit 后的堆（最大洞 14848B ≥ 14.3KB，布局确定）；
-    //   借不到=优雅失败（下轮同步/闲时排空后重试）。stop_capture 归还。
-    s_rec_stack = heap_caps_malloc(REC_STACK_BYTES, MALLOC_CAP_INTERNAL);
+    // ★ 栈缓冲"借"自 deinit 后的堆：优先 16KB，洞不够就借满最大洞（≥12KB
+    // 才开工）。v0.4.36 根因修复后（-O2，见 sdkconfig），-Og 时代 15.9KB
+    // 的 silk 链预计缩到 4-8KB；借还制与堆碎片解耦由 xTaskCreateStatic 保证。
+    // stop_capture 归还（同步窗口 wifi re-init 需完整 ~29.5KB，栈不能占）。
+    size_t want = REC_STACK_BYTES;
+    size_t hole = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+    if (hole < want) want = hole;
+    if (want < 12288) {
+        s_run = false;
+        frec_seg_end();
+        snprintf(s_err, sizeof(s_err), "栈洞不足（%uB < 12KB，稍后重试）",
+                 (unsigned)hole);
+        return ESP_ERR_NO_MEM;
+    }
+    s_rec_stack = heap_caps_malloc(want, MALLOC_CAP_INTERNAL);
     if (!s_rec_stack) {
         s_run = false;
         frec_seg_end();
-        snprintf(s_err, sizeof(s_err), "栈缓冲分配失败（堆碎片，稍后重试）");
+        snprintf(s_err, sizeof(s_err), "栈缓冲分配失败");
         return ESP_ERR_NO_MEM;
     }
-    if (xTaskCreateStatic(rec_task, "rec_task", REC_STACK_BYTES, NULL, 5,
+    if (xTaskCreateStatic(rec_task, "rec_task", want, NULL, 5,
                           s_rec_stack, &s_rec_tcb) == NULL) {
         s_run = false;                       // 理论不可达（静态任务无 NO_MEM）
         heap_caps_free(s_rec_stack);
