@@ -18,6 +18,14 @@
 
 static const char *TAG = "audio_pipe";
 
+// 8KB ≈ 170ms 音频余量（24k/16bit 单声道 48KB/s）。录音任务每 60ms 消费一帧，
+// 优先级 5 高于上传任务 4，WiFi 突发期间仍持续消费不积压。
+#define REC_SB_BYTES   (8 * 1024)
+#define REC_CHUNK      2048          // 采集块 64ms
+#define REC_WARMUP     2             // 丢弃前 2 块（提示音尾 + DMA 陈旧数据）
+
+static StreamBufferHandle_t s_rec_sb;
+
 esp_err_t audio_init(void)
 {
     esp_err_t err = bsp_audio_init();
@@ -38,19 +46,9 @@ esp_err_t audio_init(void)
 // 设计参照飞书终端固件 feishu_asr.c 的真机可用架构：阻塞的 bsp_audio_read
 // 隔离在独立采集任务里，worker 通过流缓冲消费且带超时——codec 万一挂起，
 // 卡死的只是采集任务，worker 2.5s 超时报错退出，界面永不僵死。
-// 另：每次录音前 reopen codec（修长时间空闲后首次读失败）+ 播提示音
-// （用户反馈 + TX 通路预热，官方 demo 同样是先放音再录音）。
 
-// 8KB ≈ 170ms 音频余量（24k/16bit 单声道 48KB/s）。录音任务每 60ms 消费一帧，
-// 优先级 5 高于上传任务 4，WiFi 突发期间仍持续消费不积压。省出的 24KB 系统堆
-// 给 FAT 挂载与 Opus 编码器（实测 32KB 缓冲时空闲堆不足）。
-#define REC_SB_BYTES   (8 * 1024)
-#define REC_CHUNK      2048          // 采集块 64ms
-#define REC_WARMUP     2             // 丢弃前 2 块（提示音尾 + DMA 陈旧数据）
-
-static StreamBufferHandle_t s_rec_sb;
 static volatile bool s_cap_run;      // 采集任务运行许可
-static volatile bool s_cap_stop;     // 正常停止（排空后结束）
+static volatile bool s_cap_stop;    // 正常停止（排空后结束）
 static volatile bool s_cap_cancel;   // 取消
 static volatile bool s_cap_alive;    // 采集任务存活
 static volatile esp_err_t s_cap_err;
