@@ -14,6 +14,7 @@
 #include "esp_netif.h"
 #include "esp_log.h"
 #include "esp_system.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 
@@ -31,6 +32,32 @@ static bool s_wifi_init_failed;   // esp_wifi_init NO_MEM：允许之后重试
 static char s_ssid[32];
 static char s_pass[64];
 
+// 重连退避（esp_timer 单次定时，回调跑在 esp_timer 任务）。
+// ★ 事件处理器里绝不能 vTaskDelay（v0.4.38 真机崩溃根因）：卡住事件循环
+//   2s 会让 esp_wifi_stop 触发的 STA_STOP→netif 摘链 处理器排队干等，
+//   而 deinit 只等 300ms → netif 仍向已卸载驱动发包（ieee80211_output_
+//   do 空指针）。
+static esp_timer_handle_t s_retry_timer;
+
+static void retry_connect_cb(void *arg)
+{
+    (void)arg;
+    if (s_drv_up) esp_wifi_connect();
+}
+
+static void schedule_reconnect(void)
+{
+    if (!s_retry_timer) {
+        const esp_timer_create_args_t t = {
+            .callback = retry_connect_cb,
+            .name = "wifi_retry",
+        };
+        if (esp_timer_create(&t, &s_retry_timer) != ESP_OK) return;
+    }
+    esp_timer_stop(s_retry_timer);
+    esp_timer_start_once(s_retry_timer, 2000000);   // 2s 退避
+}
+
 static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
     (void)arg;
@@ -40,8 +67,7 @@ static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data)
         xEventGroupClearBits(s_eg, BIT_IP);
         if (!s_drv_up) return;            // deinit 竞态：驱动已卸，勿重连
         ESP_LOGW(TAG, "断线，2s 后重连");
-        vTaskDelay(pdMS_TO_TICKS(2000));
-        if (s_drv_up) esp_wifi_connect();
+        schedule_reconnect();             // 非阻塞：esp_timer 定时重连
     } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *ev = (ip_event_got_ip_t *)data;
         ESP_LOGI(TAG, "已连接, IP=" IPSTR, IP2STR(&ev->ip_info.ip));
@@ -131,9 +157,10 @@ void wifi_sta_deinit(void)
     uint32_t before = esp_get_free_heap_size();
     // ★ 顺序关键（v0.4.37 真机崩溃：ieee80211_output_do 空指针）：esp_wifi_stop
     //   后 netif 仍可能被 lwIP 打包（在途 socket 的重传/ACK、ARP/MLD 周期）。
-    //   先停无线电（此时 output 只报错不崩），等 300ms 让在途流量收错退出，
-    //   再 deinit 卸驱动——直接 deinit 会把 output 打进已释放的驱动状态。
+    //   先停无线电（此时 output 只报错不崩），等 300ms 让 STA_STOP 事件把
+    //   netif 摘链 + 在途流量收错退出，再 deinit 卸驱动。
     vTaskDelay(pdMS_TO_TICKS(300));
+    if (s_retry_timer) esp_timer_stop(s_retry_timer);   // 撤销挂起的重连
     esp_wifi_deinit();                    // 释放 ~34KB；netif/回调/凭据保留
     s_drv_up = false;
     xEventGroupClearBits(s_eg, BIT_IP);
