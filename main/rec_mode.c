@@ -68,8 +68,8 @@ static const char *TAG = "recmode";
 #define SYNC_DRAIN_MS     (4 * 60000)                     // 同步窗口排空上限
 #define PEND_GUARD_BYTES  (900 * 1024)                    // 遗留待传超过即拒开新节
                                                 //（一节 3.66MB + 遗留 ≤0.9MB < 4.625MiB 环）
-#define REC_STACK_BYTES   12288                           // 12KB：20ms 帧的编码栈 +
-                                                // 裕量；分配失败会打 largest-block 日志
+#define REC_STACK_BYTES   14336                           // 14KB 静态专栈：silk 20ms
+                                                // 实测 12.4KB + 1.9KB 裕量（见 s_rec_stack 注释）
 
 // 28 抽汉明窗低通（截止 7.2kHz@24k，阻带 8.2k 起 -26dB → 9k -60dB），Q14。
 // 生成方式：windowed-sinc，fc=7200/24000，汉明窗，归一化后量化。
@@ -93,13 +93,22 @@ static uint8_t *s_opus_buf;         // 编码输出缓冲
 static int s_opus_cap;
 
 // 采集/重采样静态缓冲（不占任务栈）
-static uint8_t s_stage[BYTES_IN];   // 攒满 60ms 的 24k PCM
+static uint8_t s_stage[BYTES_IN];   // 攒满一帧 20ms 的 24k PCM
 static size_t s_staged;
 static int16_t s_hist[RS_HIST];
 static int16_t s_filt[SAMPLES_IN];
 static int16_t s_pcm16k[SAMPLES_OUT];
 static uint32_t s_seg_frames;       // 当前段已编码帧数
 static uint32_t s_sess_frames;      // 本节累计帧数（30 分钟上限）
+
+// rec_task 专栈（.bss 静态，xTaskCreateStatic）：v0.4.31 真机符号化定案——
+// silk_encode_frame_FIX(20ms) 栈深 ~12.4KB、celt(60ms) ~14KB，堆分配在
+// deinit 后的碎片堆上结构性失败（最大连续块 14848B）。静态化后与碎片彻底
+// 无关；20ms 帧使静态缓冲缩小 ~5KB，恰好补上开机 WiFi init 的预算
+// （pre-wifi ~45.0KB - 14.3KB 栈 ≈ 30.7KB > wifi init 29.5KB，margin ~1.2KB，
+// boot 分配序列确定所以确定可行）。录音/同步期堆也因此各多 ~12-14KB。
+static StaticTask_t s_rec_tcb;
+static StackType_t s_rec_stack[REC_STACK_BYTES];
 
 // ---- 屏幕时序 ----
 // ★ v0.4.30：LVGL API 必须持锁调用（ui_badge 全部走 bsp_lvgl_lock，v0.4.29
@@ -272,15 +281,15 @@ static esp_err_t start_capture(void)
     }
 
     s_run = true;
-    // ★ 大块优先分配（first-fit 堆：小任务先建会把最大洞啃掉一角）。
-    //   栈深依据：60ms 帧实测 ~14KB（v0.4.28 Stack protection fault）；20ms 帧
-    //   是 opus 标准形态（嵌入式典型 4-6KB）→ 12KB 任务栈。rec_task 起跑前
-    //   等 s_audio_ready 门槛（先建本任务后起采集）。
-    if (xTaskCreate(rec_task, "rec_task", REC_STACK_BYTES, NULL, 5, NULL) != pdPASS) {
-        s_run = false;
+    // ★ 静态专栈（xTaskCreateStatic）：分配与堆碎片彻底无关（v0.4.31 真机
+    //   符号化：silk_encode_frame_FIX 20ms 栈深 ~12.4KB，堆上分配结构性失败）。
+    //   rec_task 起跑前等 s_audio_ready 门槛（采集就绪后放行）。
+    if (xTaskCreateStatic(rec_task, "rec_task", REC_STACK_BYTES, NULL, 5,
+                          s_rec_stack, &s_rec_tcb) == NULL) {
+        s_run = false;                       // 理论不可达（静态分配无 NO_MEM）
         frec_seg_end();
-        snprintf(s_err, sizeof(s_err), "录音任务创建失败（堆碎片？）");
-        return ESP_ERR_NO_MEM;
+        snprintf(s_err, sizeof(s_err), "录音任务创建失败");
+        return ESP_FAIL;
     }
 
     if (audio_rec_start() != ESP_OK) {
