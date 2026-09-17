@@ -402,6 +402,14 @@ static void badge_worker(void *arg)
         } else {
             ui_set_busy(NULL);
             time_sync_from_gateway(g_cfg.gw_url);   // 连上即校时（/health server_time_ms）
+            // WiFi 已连、堆最低点已过后挂载 recordings（实测：开机挂载会吃掉
+            // esp_wifi_init 所需的堆 → boot loop。挂载开销以 heap 日志为准）
+            ESP_LOGI(TAG, "挂载前空闲堆 %u B", (unsigned)esp_get_free_heap_size());
+            if (frec_store_mount() != ESP_OK) {
+                ESP_LOGW(TAG, "recordings 分区挂载失败（录音不可用，其余功能不受影响）");
+            } else {
+                ESP_LOGI(TAG, "挂载后空闲堆 %u B", (unsigned)esp_get_free_heap_size());
+            }
             refresh_lists();
         }
     } else {
@@ -550,12 +558,6 @@ void app_main(void)
 
     s_evq = xQueueCreate(16, sizeof(badge_ev_t));
     if (bsp_button_init(on_key, NULL) != ESP_OK) ESP_LOGE(TAG, "按键初始化失败");
-
-    // 开机即挂载 recordings 分区（含掉电恢复）：此刻堆最富裕；WiFi 连上后
-    // 空闲堆只剩 ~20KB，届时挂载会 ESP_ERR_NO_MEM。
-    if (frec_store_mount() != ESP_OK) {
-        ESP_LOGW(TAG, "recordings 分区不可用（录音模式将无法使用）");
-    }
 
     cfg_load(&g_cfg);
     ui_set_mute(g_cfg.mute);

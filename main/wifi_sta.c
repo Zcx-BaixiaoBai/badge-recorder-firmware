@@ -41,6 +41,7 @@ void wifi_sta_start(const char *ssid, const char *pass)
     esp_netif_create_default_wifi_sta();
 
     wifi_init_config_t init = WIFI_INIT_CONFIG_DEFAULT();
+    ESP_LOGI(TAG, "esp_wifi_init 前空闲堆 %u B", (unsigned)esp_get_free_heap_size());
     ESP_ERROR_CHECK(esp_wifi_init(&init));
     ESP_ERROR_CHECK(esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, on_event, NULL, NULL));
     ESP_ERROR_CHECK(esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP, on_event, NULL, NULL));
