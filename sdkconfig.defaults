@@ -34,11 +34,13 @@ CONFIG_FREERTOS_HZ=1000
 # 录音产品不用 BLE（省静态 RAM）。共平台的 ZCode 固件需要时再开。
 CONFIG_BT_ENABLED=n
 
-# --- WiFi RAM 预算（实测 v0.4.9：wifi_init 后空闲堆仅 20.6KB，FAT 挂载不够）---
-# 默认 32 个动态 RX 缓冲约 50KB 预分配；本产品上传节奏 5 分钟一批 600KB，
-# 10 个足够（TCP 吞吐略降，可接受）。
+# --- WiFi RAM 预算（会话制 v0.4.27：录音期 WiFi 整体 deinit，静态缓冲只在
+# 同步窗口存活；启动期必须容纳 ~39KB 的 init）---
+# 默认 32 个动态 RX 缓冲约 50KB 预分配；10 个足够（吞吐略降，可接受）。
+# 静态 RX 必须 ≥6：实测 3-4 个时每 10s "delayed connect error"+"wifi:m f null"，
+# TCP 上传必挂（v0.4.26 结论）；6 个是稳定下限。
 CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=10
-CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=3
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=6
 CONFIG_ESP_WIFI_MGMT_SBUF_NUM=12
 CONFIG_ESP_WIFI_RX_MGMT_BUF_NUM_DEF=5
 CONFIG_ESP_WIFI_AMPDU_TX_ENABLED=n
