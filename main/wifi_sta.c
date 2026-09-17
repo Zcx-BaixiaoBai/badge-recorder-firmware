@@ -129,6 +129,11 @@ void wifi_sta_deinit(void)
     if (s_radio_up) wifi_sta_stop();
     if (!s_drv_up) return;
     uint32_t before = esp_get_free_heap_size();
+    // ★ 顺序关键（v0.4.37 真机崩溃：ieee80211_output_do 空指针）：esp_wifi_stop
+    //   后 netif 仍可能被 lwIP 打包（在途 socket 的重传/ACK、ARP/MLD 周期）。
+    //   先停无线电（此时 output 只报错不崩），等 300ms 让在途流量收错退出，
+    //   再 deinit 卸驱动——直接 deinit 会把 output 打进已释放的驱动状态。
+    vTaskDelay(pdMS_TO_TICKS(300));
     esp_wifi_deinit();                    // 释放 ~34KB；netif/回调/凭据保留
     s_drv_up = false;
     xEventGroupClearBits(s_eg, BIT_IP);
