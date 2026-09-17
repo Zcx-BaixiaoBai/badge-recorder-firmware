@@ -77,7 +77,8 @@ static void recover_unfinalized(void)
         const char *dot = strrchr(ent->d_name, '.');
         if (!dot || strcasecmp(dot, ".FRC") != 0) continue;
         char path[64];
-        snprintf(path, sizeof(path), MOUNT_POINT "/%s", ent->d_name);
+        // %.16s：文件名实为 R%07u.FRC（12 字符），限长是给编译器截断分析看的
+        snprintf(path, sizeof(path), "/rec/%.16s", ent->d_name);
         FILE *f = fopen(path, "r+b");
         if (!f) continue;
         frec_hdr_t h;
@@ -158,7 +159,7 @@ esp_err_t frec_seg_begin(uint64_t start_ts_ms, uint32_t *seq_out)
     snprintf(path, sizeof(path), "/rec/R%07u.FRC", (unsigned)s_seq);
     s_fp = fopen(path, "wb");
     if (!s_fp) {
-        ESP_LOGE(TAG, "创建 %s 失败（分区满？）", path);
+        ESP_LOGE(TAG, "创建 %.48s 失败（分区满？）", path);
         return ESP_FAIL;
     }
     s_payload = 0;

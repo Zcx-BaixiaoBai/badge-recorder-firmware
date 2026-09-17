@@ -20,6 +20,7 @@
 #include "bsp_display.h"
 #include "frec_store.h"
 #include "rec_upload.h"
+#include "time_sync.h"
 #include "wifi_sta.h"
 
 #include "esp_lcd_panel_io.h"
