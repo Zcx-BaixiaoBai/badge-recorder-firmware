@@ -40,7 +40,7 @@
 static const char *TAG = "badge";
 
 typedef enum { LVL_WS = 0, LVL_SESS, LVL_DETAIL, LVL_SETTINGS, LVL_SUBPAGE } level_t;
-typedef enum { EV_UP = 0, EV_DOWN, EV_OK, EV_OKLONG } badge_ev_t;
+typedef enum { EV_UP = 0, EV_DOWN, EV_OK, EV_OKLONG, EV_UPLONG, EV_DOWNLONG } badge_ev_t;
 
 #define REC_MAX_SEC   15
 #define REC_MAX_BYTES (REC_MAX_SEC * 48000)   // 24kHz*16bit*mono = 48000 B/s
@@ -278,8 +278,9 @@ static const char *GUIDE_TEXT =
     "1 长按 OK → 设置 → 配网设置。\n"
     "2 手机连热点 Badge-Setup，浏览器开 http://192.168.4.1。\n"
     "3 填 WiFi(2.4G)、网关地址、令牌，保存后工牌重启。\n"
-    "之后：设置 → 熄屏录音模式 开始录音，长按 OK 结束。\n"
-    "录音自动分段上传，每日分析出纪要与日报。\n"
+    "【录音】长按上键 = 30 分钟一节（录满同步后提示）；\n"
+    "长按下键 = 连续录音（每节同步后自动续录）；\n"
+    "长按 OK = 结束。同步后服务器每日出纪要与日报。\n"
     "（本页可上下键滚动）";
 
 static void show_onboarding(void)
@@ -297,16 +298,17 @@ static void build_settings(void)
 {
     static char mute_txt[24];
     snprintf(mute_txt, sizeof(mute_txt), "静音：%s", g_cfg.mute ? "开" : "关");
-    ui_row_t rows[7];
+    ui_row_t rows[8];
     rows[0].main = "配网设置 (WiFi+网关)"; rows[0].right = NULL;
     rows[1].main = mute_txt;              rows[1].right = NULL;
     rows[2].main = "测试网关连接";         rows[2].right = NULL;
-    rows[3].main = "熄屏录音模式";         rows[3].right = NULL;
-    rows[4].main = "配网指导";             rows[4].right = NULL;
-    rows[5].main = "关于";                rows[5].right = NULL;
-    rows[6].main = "返回";                rows[6].right = NULL;
+    rows[3].main = "录音（30分钟一节）";   rows[3].right = NULL;
+    rows[4].main = "连续录音（自动续录）"; rows[4].right = NULL;
+    rows[5].main = "配网指导";             rows[5].right = NULL;
+    rows[6].main = "关于";                rows[6].right = NULL;
+    rows[7].main = "返回";                rows[7].right = NULL;
     ui_set_header("设置");
-    ui_show_list(rows, 7, 0);
+    ui_show_list(rows, 8, 0);
     ui_set_hint("上下选择 OK执行 长按OK返回");
     s_level = LVL_SETTINGS;
 }
@@ -319,6 +321,45 @@ static void back_to_main(void)
         s_onboarding = false;
         refresh_lists();
     }
+}
+
+// ---------- 会话制录音（v0.4.27）：启动入口 + 收尾 UI ----------
+
+// 进入一节录音（worker 上下文）。有网先校时（无网也允许录，段头 start_ts=0
+// 由服务端兜底）。成功：屏幕熄灭，会话任务接管，worker 走阶段守卫。
+static bool start_rec_session(rec_start_mode_t mode)
+{
+    if (wifi_is_connected()) time_sync_from_gateway(g_cfg.gw_url);
+    if (rec_mode_start(mode) != ESP_OK) {
+        ui_set_error(rec_mode_last_error());
+        vTaskDelay(pdMS_TO_TICKS(1500));
+        build_settings();
+        return false;
+    }
+    return true;
+}
+
+// 会话结束收尾 UI（worker 检测 phase 回到 IDLE 时调用；宿主任务已亮屏）。
+static void session_end_ui(void)
+{
+    const char *err = rec_mode_last_error();
+    int pend = rec_upload_pending();
+    s_level = LVL_SUBPAGE;
+    ui_set_header("录音");
+    if (err[0]) {
+        ui_show_detail("录音异常结束");
+        ui_set_error(err);
+        ui_set_state(pend > 0 ? "已录部分留本机，连网后自动补传" : "已收尾");
+    } else if (pend > 0) {
+        // 排空失败（网不可用）：续录已停（Flash 环保护），遗留段连网后自动补传
+        ui_show_detail("同步未完成");
+        ui_set_error("网络不可用");
+        ui_set_state("已停续录（存储保护），连网后自动补传");
+    } else {
+        ui_show_detail("同步完成");
+        ui_set_state("可再次录音");
+    }
+    ui_set_hint("长按OK返回设置");
 }
 
 static void settings_activate(int sel)
@@ -354,18 +395,11 @@ static void settings_activate(int sel)
         ui_set_hint("长按OK返回设置");
         break;
     }
-    case 3: { // 熄屏录音模式（M1）：进入后熄屏持续录音，长按 OK 结束
-        // 有网先校时（/health server_time_ms）；无网也允许录（段头 start_ts=0 由服务端兜底）
-        if (wifi_is_connected()) time_sync_from_gateway(g_cfg.gw_url);
-        if (rec_mode_start() != ESP_OK) {
-            ui_set_error(rec_mode_last_error());
-            vTaskDelay(pdMS_TO_TICKS(1500));
-            build_settings();
-        }
-        // 成功：屏幕已熄，事件循环进入录音模式守卫（见 badge_worker）
+    case 3:   // 录音（手动 30 分钟一节）：录满 → 同步 → 提示"可再次录音"
+    case 4:   // 连续录音（自动续录）：录满 → 同步排空 → 自动续录
+        start_rec_session(sel == 3 ? REC_MODE_MANUAL : REC_MODE_AUTO);
         break;
-    }
-    case 4:   // 配网指导
+    case 5:   // 配网指导
         s_level = LVL_SUBPAGE;
         ui_set_header("配网指导");
         ui_show_detail("配网指导");
@@ -373,12 +407,12 @@ static void settings_activate(int sel)
         ui_set_answer(GUIDE_TEXT);
         ui_set_hint("长按OK返回设置");
         break;
-    case 5:   // 关于
+    case 6:   // 关于
         s_level = LVL_SUBPAGE;
         ui_set_header("关于");
         ui_show_detail("关于");
-        ui_set_state("工牌录音固件 v0.4.7");
-        ui_set_answer("熄屏录音 + 分段上传 + 每日纪要。\n服务端：recorder-server\n（badge-recorder-firmware 仓库）。");
+        ui_set_state("工牌录音固件 v0.4.27");
+        ui_set_answer("会话制录音（30分钟一节）+ 同步上传 + 每日纪要。\n服务端：recorder-server\n（badge-recorder-firmware 仓库）。");
         ui_set_hint("长按OK返回设置");
         break;
     default:  // 返回
@@ -417,12 +451,20 @@ static void badge_worker(void *arg)
     }
 
     badge_ev_t ev;
+    rec_phase_t prev_ph = REC_PHASE_IDLE;
     for (;;) {
-        if (xQueueReceive(s_evq, &ev, pdMS_TO_TICKS(15000)) == pdFALSE) {
-            if (!rec_mode_active()) {
-                ui_set_battery(bsp_battery_soc());   // 心跳：电量刷新（熄屏录音中跳过）
+        // 会话阶段监视：IDLE 之外 250ms 快轮询（收尾 UI 及时刷）；
+        // 会话刚结束时宿主任务已亮屏，这里按结果出文案。
+        rec_phase_t ph = rec_mode_phase();
+        if (ph == REC_PHASE_IDLE && prev_ph != REC_PHASE_IDLE) session_end_ui();
+        prev_ph = ph;
+
+        if (xQueueReceive(s_evq, &ev, pdMS_TO_TICKS(ph == REC_PHASE_IDLE ? 15000 : 250))
+                == pdFALSE) {
+            if (ph == REC_PHASE_IDLE) {
+                ui_set_battery(bsp_battery_soc());   // 心跳：电量刷新（会话中跳过）
                 // 闲时兜底（每 60s 一次）：有遗留段且已连网 → 排空
-                // （录音结束尾段若 stop 时未连上网，由这里补上；崩溃遗留同理）
+                // （排空失败/崩溃遗留的段由这里补上）
                 static int64_t s_last_idle_upload_us;
                 if (esp_timer_get_time() - s_last_idle_upload_us > 60000000) {
                     s_last_idle_upload_us = esp_timer_get_time();
@@ -433,22 +475,11 @@ static void badge_worker(void *arg)
             }
             continue;
         }
-        if (rec_mode_active()) {
-            // 熄屏录音中：只认"长按 OK = 结束"，其余按键全部忽略。
-            if (ev == EV_OKLONG) {
-                rec_mode_stop();
-                if (rec_mode_last_error()[0]) {
-                    s_level = LVL_SUBPAGE;
-                    ui_set_header("录音结束");
-                    ui_show_detail("录音结束");
-                    ui_set_state("已保存至本机存储");
-                    ui_set_error(rec_mode_last_error());
-                    ui_set_hint("长按OK返回设置");
-                } else {
-                    build_settings();
-                }
-            }
-            continue;
+        if (ph != REC_PHASE_IDLE) {
+            // 会话中（录音/同步）：只认"长按 OK = 结束"。
+            // 录音期=停录排空走同步；同步期=本节完成后不再续录。
+            if (ev == EV_OKLONG) rec_mode_stop();
+            continue;               // 其余按键全部忽略
         }
         switch (ev) {
         case EV_UP:
@@ -462,6 +493,10 @@ static void badge_worker(void *arg)
             if (s_level == LVL_DETAIL || s_level == LVL_SUBPAGE ||
                 (s_onboarding && s_level == LVL_WS)) ui_scroll_answer(-28);
             else ui_list_move(1);
+            break;
+        case EV_UPLONG:               // 长按上 = 手动：30 分钟一节
+        case EV_DOWNLONG:             // 长按下 = 续录：同步排空后自动续
+            start_rec_session(ev == EV_UPLONG ? REC_MODE_MANUAL : REC_MODE_AUTO);
             break;
         case EV_OK:
             // LONG 之后松手可能再报一次 CLICK：600ms 内忽略
@@ -516,6 +551,12 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user)
     if (btn == BSP_BTN_OK && ev == BSP_BTN_LONG) {
         if (s_ptt == 2) return;                  // 等网关中：忽略（防迟到事件在处理完后误返回）
         e = EV_OKLONG;                           // 录音中长按=取消，由 worker 处理
+    } else if (btn == BSP_BTN_UP && ev == BSP_BTN_LONG) {
+        if (s_ptt != 0) return;
+        e = EV_UPLONG;                           // 长按上 = 手动 30 分钟一节
+    } else if (btn == BSP_BTN_DOWN && ev == BSP_BTN_LONG) {
+        if (s_ptt != 0) return;
+        e = EV_DOWNLONG;                         // 长按下 = 连续录音（自动续录）
     } else if (ev != BSP_BTN_CLICK) {
         return;
     } else if (btn == BSP_BTN_UP) {
@@ -565,7 +606,7 @@ void app_main(void)
         provision_run();          // 配网模式：阻塞，网页保存后内部重启
     }
     gw_client_init(g_cfg.gw_url, g_cfg.gw_token);
-    rec_upload_init();              // 上传任务（无线电占空比；kick 驱动）
+    rec_upload_init();              // 上传任务（v2 被动模型：kick 驱动，不碰无线电）
     s_onboarding = !g_cfg.ssid[0];
 
     // Opus 编码器开机预开并永久持有：必须在 WiFi 之前——WiFi 之后堆碎片化，

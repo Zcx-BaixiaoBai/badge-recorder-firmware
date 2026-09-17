@@ -7,14 +7,14 @@
 //   服务端幂等：同 (Device-Id, Segment-Id) 返回 dedup:true——重传安全。
 //
 // 段数据经 frec_store_read 流式读出（无文件系统、无路径、无 fopen）：
-// 4KB 读块 → Content-Length 定长上传（服务端 handler 只认 Content-Length）。
+// 1KB 读块（静态 s_rbuf 也缩到 1KB，给同步窗口的紧张堆让路）→
+// Content-Length 定长上传（服务端 handler 只认 Content-Length）。
 // 上传成功即 frec_store_delete（环空间回收，4.625MiB 不回收 40 分钟写满）。
 // 失败即停整轮，段留队列下轮补传。
 #include "rec_upload.h"
 
 #include "frec_store.h"
 #include "gw_client.h"
-#include "rec_mode.h"
 #include "time_sync.h"
 #include "wifi_sta.h"
 
@@ -29,12 +29,13 @@
 
 static const char *TAG = "recupload";
 
-#define MAX_BATCH     16            // 单轮最多处理的段数
-#define READ_CHUNK    2048
+#define MAX_BATCH     16            // 单轮最多处理的段数（>80 分钟积压，足够）
+#define READ_CHUNK    1024
 
 static TaskHandle_t s_task;
 static char s_device_id[24];        // "badge-<12 hex>"
 static uint8_t s_rbuf[READ_CHUNK];
+static bool s_was_connected;        // 未连→已连 跃迁：触发一次校时
 
 // ---- 设备 ID / 出站校验 ----
 
@@ -78,7 +79,7 @@ static esp_err_t upload_one(const frec_seg_info_t *seg)
         .url = url,
         .method = HTTP_METHOD_POST,
         .timeout_ms = 60000,
-        .buffer_size = 1024,
+        .buffer_size = 512,
         .buffer_size_tx = READ_CHUNK,
         .disable_auto_redirect = true,
     };
@@ -162,29 +163,20 @@ static void upload_task(void *arg)
     (void)arg;
     for (;;) {
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);              // 等 kick
-        bool recording = rec_mode_active();
-        bool we_started_radio = false;
-
+        // v2 被动模型：任务不碰无线电。同步窗口/闲时路径都已把网弄好才 kick。
         if (!wifi_is_connected()) {
-            if (!recording) continue;                         // 闲时无网：不动无线电
-            if (!wifi_sta_resume()) {
-                ESP_LOGW(TAG, "无线电恢复失败，本轮放弃");
-                continue;
-            }
-            we_started_radio = true;
-            if (!wifi_wait_connected(20)) {
-                ESP_LOGW(TAG, "WiFi 未连上，本轮放弃");
-                wifi_sta_stop();
-                continue;
-            }
-            time_sync_from_gateway(gw_client_base());         // 每次重连重校（design §4.4）
+            s_was_connected = false;
+            continue;
         }
-
+        // 未连→已连 跃迁：重校时（同步窗口重建驱动后、闲时断线重连后都覆盖）
+        if (!s_was_connected) {
+            s_was_connected = true;
+            time_sync_from_gateway(gw_client_base());
+        }
         int sent = flush_pending();
-        ESP_LOGI(TAG, "本轮上传 %d 段（剩 %d 待传）", sent, frec_store_pending());
-
-        // 占空比收尾：仍处录音模式才关无线电；录音已结束就留给 UI 用
-        if (we_started_radio && rec_mode_active()) wifi_sta_stop();
+        if (sent > 0 || frec_store_pending() > 0) {
+            ESP_LOGI(TAG, "本轮上传 %d 段（剩 %d 待传）", sent, frec_store_pending());
+        }
     }
 }
 
@@ -194,8 +186,9 @@ void rec_upload_init(void)
 {
     device_id_init();
     if (s_task) return;
-    // 优先级 4：低于 rec_task(5)/采集(6)——音频永不因上传让路
-    if (xTaskCreate(upload_task, "rec_upload", 3072, NULL, 4, &s_task) != pdPASS) {
+    // 4KB：esp_http_client 全流程在本任务跑（v2 同步窗口堆紧张，本任务栈
+    // 换来 HTTP 可靠性；优先级 4 低于 rec_task(5)/采集(6)——录音优先）
+    if (xTaskCreate(upload_task, "rec_upload", 4096, NULL, 4, &s_task) != pdPASS) {
         ESP_LOGE(TAG, "上传任务创建失败");
         s_task = NULL;
     }

@@ -4,7 +4,8 @@
 // registry 无 espressif/linenoise。这里直接装 USB-Serial-JTAG 驱动读行——
 // PC 侧用 pyserial 发命令即可（无需行编辑/历史），printf 输出走同一控制台。
 //
-// 命令：help / rec-start / rec-stop / rec-status / batt / time / kick / pending / reboot
+// 命令：help / rec-start / rec-auto / rec-stop / rec-status / sync / batt /
+//       time / kick / reboot
 #include "badge_console.h"
 
 #include "bsp_battery.h"
@@ -35,8 +36,17 @@ typedef struct {
 static int cmd_rec_start(int argc, char **argv)
 {
     (void)argc; (void)argv;
-    esp_err_t e = rec_mode_start();
-    printf("rec_start: %s%s\n", e == ESP_OK ? "OK" : "FAIL",
+    esp_err_t e = rec_mode_start(REC_MODE_MANUAL);
+    printf("rec_start(手动30分钟): %s%s\n", e == ESP_OK ? "OK" : "FAIL",
+           e == ESP_OK ? "" : rec_mode_last_error());
+    return 0;
+}
+
+static int cmd_rec_auto(int argc, char **argv)
+{
+    (void)argc; (void)argv;
+    esp_err_t e = rec_mode_start(REC_MODE_AUTO);
+    printf("rec_auto(连续续录): %s%s\n", e == ESP_OK ? "OK" : "FAIL",
            e == ESP_OK ? "" : rec_mode_last_error());
     return 0;
 }
@@ -45,17 +55,29 @@ static int cmd_rec_stop(int argc, char **argv)
 {
     (void)argc; (void)argv;
     rec_mode_stop();
-    printf("rec_stop: done%s\n", rec_mode_last_error()[0] ? "（有错误，见日志）" : "");
+    printf("rec_stop: done（同步若在进行会继续）%s\n",
+           rec_mode_last_error()[0] ? "（有错误，见日志）" : "");
     return 0;
 }
 
 static int cmd_rec_status(int argc, char **argv)
 {
     (void)argc; (void)argv;
-    printf("recording=%d pending_upload=%d mounted=%d heap=%uB\n",
-           rec_mode_active(), rec_upload_pending(), frec_store_is_mounted(),
+    const char *ph = rec_mode_phase() == REC_PHASE_RECORDING ? "RECORDING" :
+                     rec_mode_phase() == REC_PHASE_SYNC ? "SYNC" : "IDLE";
+    printf("phase=%s pending_upload=%d mounted=%d heap=%uB\n",
+           ph, rec_upload_pending(), frec_store_is_mounted(),
            (unsigned)esp_get_free_heap_size());
     if (rec_mode_last_error()[0]) printf("last_err=%s\n", rec_mode_last_error());
+    return 0;
+}
+
+static int cmd_sync(int argc, char **argv)
+{
+    (void)argc; (void)argv;
+    printf("sync_and_flush: %s（剩 %d 段）\n",
+           rec_mode_sync_and_flush() ? "排空成功" : "未排空",
+           rec_upload_pending());
     return 0;
 }
 
@@ -92,9 +114,11 @@ static int cmd_reboot(int argc, char **argv)
 }
 
 static const cmd_t CMDS[] = {
-    { "rec-start",  "进入熄屏录音模式",        cmd_rec_start },
-    { "rec-stop",   "结束录音并亮屏",          cmd_rec_stop },
-    { "rec-status", "录音/上传/存储/内存状态", cmd_rec_status },
+    { "rec-start",  "进入录音（手动，30分钟一节）", cmd_rec_start },
+    { "rec-auto",   "进入录音（连续，自动续录）",   cmd_rec_auto },
+    { "rec-stop",   "结束本节（同步继续，不续录）", cmd_rec_stop },
+    { "rec-status", "会话阶段/上传/存储/内存状态",  cmd_rec_status },
+    { "sync",       "手动触发同步排空（连WiFi上传）", cmd_sync },
     { "batt",       "CW2017 电量/电压",        cmd_batt },
     { "time",       "当前墙钟毫秒（0=未校时）", cmd_time },
     { "kick",       "通知上传任务排空待传段",  cmd_kick },
