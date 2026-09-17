@@ -288,7 +288,7 @@ esp_err_t rec_mode_start(void)
 
     s_active = true;
     s_run = true;
-    if (xTaskCreate(rec_task, "rec_task", 8192, NULL, 5, NULL) != pdPASS) {
+    if (xTaskCreate(rec_task, "rec_task", 4096, NULL, 5, NULL) != pdPASS) {
         s_active = false;
         s_run = false;
         audio_rec_cancel();

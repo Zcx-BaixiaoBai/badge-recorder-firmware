@@ -116,7 +116,7 @@ esp_err_t audio_rec_start(void)
     ESP_LOGI(TAG, "录音启动（空闲堆 %u B）", (unsigned)esp_get_free_heap_size());
 
     s_cap_run = true;
-    if (xTaskCreate(cap_task, "rec_cap", 4096, NULL, 6, NULL) != pdPASS) {
+    if (xTaskCreate(cap_task, "rec_cap", 3072, NULL, 6, NULL) != pdPASS) {
         s_cap_run = false;
         return ESP_ERR_NO_MEM;
     }

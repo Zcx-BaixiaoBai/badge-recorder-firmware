@@ -30,7 +30,7 @@
 static const char *TAG = "recupload";
 
 #define MAX_BATCH     16            // 单轮最多处理的段数
-#define READ_CHUNK    4096
+#define READ_CHUNK    2048
 
 static TaskHandle_t s_task;
 static char s_device_id[24];        // "badge-<12 hex>"
@@ -195,7 +195,7 @@ void rec_upload_init(void)
     device_id_init();
     if (s_task) return;
     // 优先级 4：低于 rec_task(5)/采集(6)——音频永不因上传让路
-    if (xTaskCreate(upload_task, "rec_upload", 4096, NULL, 4, &s_task) != pdPASS) {
+    if (xTaskCreate(upload_task, "rec_upload", 3072, NULL, 4, &s_task) != pdPASS) {
         ESP_LOGE(TAG, "上传任务创建失败");
         s_task = NULL;
     }
