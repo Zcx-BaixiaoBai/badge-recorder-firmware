@@ -25,6 +25,12 @@ esp_err_t audio_init(void)
     err = bsp_audio_set_format(24000, 16, 1);   // 24kHz：BCLK=768kHz，满足 ES8311 ADC 时钟需求（16kHz 时 BCLK=512kHz 不足→录几块就停）
     if (err != ESP_OK) return err;
     bsp_audio_set_volume(90);
+    // 录音流缓冲开机分配并永久持有：WiFi 之后稳态堆仅 ~4KB，运行期 xStreamBufferCreate
+    // 必败（v0.4.19 实测 rec_start 差最后一步）。开机堆充裕（~59KB）。
+    if (!s_rec_sb) {
+        s_rec_sb = xStreamBufferCreate(REC_SB_BYTES, 1);
+        if (!s_rec_sb) return ESP_ERR_NO_MEM;
+    }
     return ESP_OK;
 }
 
@@ -94,7 +100,7 @@ esp_err_t audio_rec_start(void)
             return ESP_ERR_INVALID_STATE;
         }
     }
-    if (s_rec_sb) { vStreamBufferDelete(s_rec_sb); s_rec_sb = NULL; }
+    if (s_rec_sb) xStreamBufferReset(s_rec_sb);   // 复用开机分配的流缓冲（不删不建）
     s_cap_err = ESP_OK;
     s_cap_stop = false;
     s_cap_cancel = false;
@@ -111,12 +117,8 @@ esp_err_t audio_rec_start(void)
     // bsp_audio_write(s_beep, sizeof(s_beep));
     ESP_LOGI(TAG, "录音启动（空闲堆 %u B）", (unsigned)esp_get_free_heap_size());
 
-    s_rec_sb = xStreamBufferCreate(REC_SB_BYTES, 1);
-    if (!s_rec_sb) return ESP_ERR_NO_MEM;
     s_cap_run = true;
     if (xTaskCreate(cap_task, "rec_cap", 4096, NULL, 6, NULL) != pdPASS) {
-        vStreamBufferDelete(s_rec_sb);
-        s_rec_sb = NULL;
         s_cap_run = false;
         return ESP_ERR_NO_MEM;
     }
