@@ -101,14 +101,15 @@ static int16_t s_pcm16k[SAMPLES_OUT];
 static uint32_t s_seg_frames;       // 当前段已编码帧数
 static uint32_t s_sess_frames;      // 本节累计帧数（30 分钟上限）
 
-// rec_task 专栈（.bss 静态，xTaskCreateStatic）：v0.4.31 真机符号化定案——
-// silk_encode_frame_FIX(20ms) 栈深 ~12.4KB、celt(60ms) ~14KB，堆分配在
-// deinit 后的碎片堆上结构性失败（最大连续块 14848B）。静态化后与碎片彻底
-// 无关；20ms 帧使静态缓冲缩小 ~5KB，恰好补上开机 WiFi init 的预算
-// （pre-wifi ~45.0KB - 14.3KB 栈 ≈ 30.7KB > wifi init 29.5KB，margin ~1.2KB，
-// boot 分配序列确定所以确定可行）。录音/同步期堆也因此各多 ~12-14KB。
+// rec_task 专栈（v0.4.33 堆上"借还"制）：v0.4.31 真机符号化定案——
+// silk_encode_frame_FIX(20ms) 栈深 ~12.4KB、celt(60ms) ~14KB。v0.4.32 尝试
+// 14KB .bss 静态栈 → 开机 esp_wifi_init NO_MEM（esf_buf_setup_static 分配
+// 失败——启动预算容不下常驻 14KB）。改为：会话开始（WiFi 已 deinit，空闲
+// 43.3KB/最大洞 14848B）时 heap_caps_malloc 借出，stop_capture 归还——
+// 同步窗口 wifi re-init 需完整 ~29.5KB，不能被占。分配失败=优雅拒开新节。
+// xTaskCreateStatic 保证任务创建本身不再依赖堆形状。
 static StaticTask_t s_rec_tcb;
-static StackType_t s_rec_stack[REC_STACK_BYTES];
+static StackType_t *s_rec_stack;
 
 // ---- 屏幕时序 ----
 // ★ v0.4.30：LVGL API 必须持锁调用（ui_badge 全部走 bsp_lvgl_lock，v0.4.29
@@ -281,12 +282,20 @@ static esp_err_t start_capture(void)
     }
 
     s_run = true;
-    // ★ 静态专栈（xTaskCreateStatic）：分配与堆碎片彻底无关（v0.4.31 真机
-    //   符号化：silk_encode_frame_FIX 20ms 栈深 ~12.4KB，堆上分配结构性失败）。
-    //   rec_task 起跑前等 s_audio_ready 门槛（采集就绪后放行）。
+    // ★ 栈缓冲"借"自 deinit 后的堆（最大洞 14848B ≥ 14.3KB，布局确定）；
+    //   借不到=优雅失败（下轮同步/闲时排空后重试）。stop_capture 归还。
+    s_rec_stack = heap_caps_malloc(REC_STACK_BYTES, MALLOC_CAP_INTERNAL);
+    if (!s_rec_stack) {
+        s_run = false;
+        frec_seg_end();
+        snprintf(s_err, sizeof(s_err), "栈缓冲分配失败（堆碎片，稍后重试）");
+        return ESP_ERR_NO_MEM;
+    }
     if (xTaskCreateStatic(rec_task, "rec_task", REC_STACK_BYTES, NULL, 5,
                           s_rec_stack, &s_rec_tcb) == NULL) {
-        s_run = false;                       // 理论不可达（静态分配无 NO_MEM）
+        s_run = false;                       // 理论不可达（静态任务无 NO_MEM）
+        heap_caps_free(s_rec_stack);
+        s_rec_stack = NULL;
         frec_seg_end();
         snprintf(s_err, sizeof(s_err), "录音任务创建失败");
         return ESP_FAIL;
@@ -295,6 +304,9 @@ static esp_err_t start_capture(void)
     if (audio_rec_start() != ESP_OK) {
         s_run = false;                       // rec_task 过门槛即自退
         for (int i = 0; i < 20 && !s_rec_done; i++) vTaskDelay(pdMS_TO_TICKS(50));
+        vTaskDelay(pdMS_TO_TICKS(100));      // 确保 vTaskDelete 完成
+        heap_caps_free(s_rec_stack);
+        s_rec_stack = NULL;
         frec_seg_end();
         snprintf(s_err, sizeof(s_err), "采集启动失败");
         return ESP_FAIL;
@@ -306,12 +318,18 @@ static esp_err_t start_capture(void)
     return ESP_OK;
 }
 
-// 本节采集收尾（无论何种结束路径）：确保 cap_task 退出。
+// 本节采集收尾（无论何种结束路径）：确保 cap_task 退出、归还借出的栈缓冲。
+//（150ms 延时保证 rec_task 的 vTaskDelete 已完成，栈可安全释放；同步窗口
+//  的 wifi re-init 需要完整 ~29.5KB，栈不能占着）
 static void stop_capture(void)
 {
     audio_rec_stop();                        // cap_task 排空退出（一块 64ms）
     vTaskDelay(pdMS_TO_TICKS(150));
     audio_rec_cancel();                      // 兜底（挂死场景由下次 start 解卡）
+    if (s_rec_stack) {
+        heap_caps_free(s_rec_stack);
+        s_rec_stack = NULL;
+    }
 }
 
 // 遗留待传总量（索引 RAM 数据，无 flash 读）。
