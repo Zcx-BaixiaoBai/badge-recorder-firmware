@@ -267,7 +267,7 @@ esp_err_t frec_seg_begin(uint64_t start_ts_ms, uint32_t *seq_out)
         if (range_free(a, 1)) { try_addr = a; goto found; }
     }
     ESP_LOGE(TAG, "存储环满（段未上传排空？）");
-    return ESP_ERR_NO_FREE_PAGES;
+    return ESP_ERR_NO_MEM;
 
 found:
     s_wslot = find_free_slot();
@@ -310,7 +310,7 @@ static esp_err_t wbuf_flush(void)
         if (sec_idx >= s_werased) {               // 新扇区：擦
             if (s_waddr + (sec_idx + 1) * SEC_SZ > s_data_size) {
                 ESP_LOGE(TAG, "段写越界（环尾），段中止");
-                return ESP_ERR_NO_FREE_PAGES;
+                return ESP_ERR_NO_MEM;
             }
             if (esp_partition_erase_range(s_part,
                     SEC_SZ + s_waddr + sec_idx * SEC_SZ, SEC_SZ) != ESP_OK) {
