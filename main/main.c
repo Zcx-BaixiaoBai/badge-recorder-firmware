@@ -19,6 +19,7 @@
 #include "gw_client.h"
 #include "audio_pipe.h"
 #include "badge_cfg.h"
+#include "badge_console.h"
 #include "provision.h"
 #include "rec_mode.h"
 #include "rec_upload.h"
@@ -563,5 +564,6 @@ void app_main(void)
     rec_upload_init();              // 上传任务（无线电占空比；kick 驱动）
     s_onboarding = !g_cfg.ssid[0];
     xTaskCreate(badge_worker, "badge_worker", 12288, NULL, 5, NULL);
+    badge_console_start();           // USB 控制台（COM 口 REPL：rec-start/rec-stop/batt/kick…）
     ESP_LOGI(TAG, "worker 已启动，网关=%s", g_cfg.gw_url);
 }
