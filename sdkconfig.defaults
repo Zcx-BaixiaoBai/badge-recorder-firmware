@@ -57,8 +57,11 @@ CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=3
 # timeout，真机实锤）。10.4KB 是 v0.4.26-28 实测可用水位。
 CONFIG_ESP_WIFI_MGMT_SBUF_NUM=8
 CONFIG_ESP_WIFI_RX_MGMT_BUF_NUM_DEF=2
-CONFIG_ESP_WIFI_AMPDU_TX_ENABLED=n
-CONFIG_ESP_WIFI_AMPDU_RX_ENABLED=n
+# v0.4.43：重开 AMPDU TX/RX。关它是 zcode 工牌时代省 RAM 的 hack；真机
+# 抓包实锤：握手 3 包全到、大宗数据零帧到达（企业 AP 对非聚合流近乎饿死
+# ——小请求单帧可用、多帧传输从未成功）。C3 预算已恢复到可承受聚合缓冲。
+CONFIG_ESP_WIFI_AMPDU_TX_ENABLED=y
+CONFIG_ESP_WIFI_AMPDU_RX_ENABLED=y
 
 # --- LWIP RAM：给 Opus 编码器(~25KB 状态)腾堆。TCP 收发窗各 5744→3072
 # （LWIP sanity 要求 ≥2×MSS=2920；600KB 段上传吞吐仍可；单连接足够）

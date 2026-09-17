@@ -27,6 +27,7 @@
 #include "time_sync.h"
 
 #include "esp_log.h"
+#include "esp_heap_caps.h"
 #include "esp_timer.h"
 #include "esp_system.h"
 #include "nvs_flash.h"
@@ -439,7 +440,9 @@ static void badge_worker(void *arg)
             time_sync_from_gateway(g_cfg.gw_url);   // 连上即校时（/health server_time_ms）
             // WiFi 已连、堆最低点已过后挂载 recordings（实测：开机挂载会吃掉
             // esp_wifi_init 所需的堆 → boot loop。挂载开销以 heap 日志为准）
-            ESP_LOGI(TAG, "挂载前空闲堆 %u B", (unsigned)esp_get_free_heap_size());
+            ESP_LOGI(TAG, "挂载前空闲堆 %u B（最大连续块 %u B）",
+                     (unsigned)esp_get_free_heap_size(),
+                     (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
             if (frec_store_mount() != ESP_OK) {
                 ESP_LOGW(TAG, "recordings 分区挂载失败（录音不可用，其余功能不受影响）");
             } else {
