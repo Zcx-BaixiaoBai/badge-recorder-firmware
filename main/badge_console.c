@@ -1,12 +1,10 @@
-// main/badge_console.c —— USB-Serial-JTAG 控制台实现。
+// main/badge_console.c —— USB-Serial-JTAG 命令行实现（自研，零外部依赖）。
 //
-// 命令集（录音产品线驱动 + 调试）：
-//   rec-start / rec-stop / rec-status   熄屏录音控制与状态
-//   batt                                CW2017 电量/电压
-//   time                                当前墙钟毫秒（未校时=0）
-//   kick                                通知上传任务（排空待传段）
-//   pending                             待上传段数
-//   reboot                              重启
+// 不用 esp_console REPL：其依赖 linenoise/argtable3，IDF 5.5 已移出核心且
+// registry 无 espressif/linenoise。这里直接装 USB-Serial-JTAG 驱动读行——
+// PC 侧用 pyserial 发命令即可（无需行编辑/历史），printf 输出走同一控制台。
+//
+// 命令：help / rec-start / rec-stop / rec-status / batt / time / kick / pending / reboot
 #include "badge_console.h"
 
 #include "bsp_battery.h"
@@ -15,25 +13,31 @@
 #include "rec_upload.h"
 #include "time_sync.h"
 
-#include "esp_console.h"
+#include "driver/usb_serial_jtag.h"
 #include "esp_log.h"
 #include "esp_system.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
-#include <stdio.h>
+#include <string.h>
 
 static const char *TAG = "console";
+
+#define RX_BUF   256
+#define LINE_MAX 64
+
+typedef struct {
+    const char *name;
+    const char *help;
+    int (*fn)(int argc, char **argv);
+} cmd_t;
 
 static int cmd_rec_start(int argc, char **argv)
 {
     (void)argc; (void)argv;
     esp_err_t e = rec_mode_start();
-    if (e == ESP_OK) {
-        printf("rec_start: OK\n");
-    } else {
-        printf("rec_start: FAIL %s\n", rec_mode_last_error());
-    }
+    printf("rec_start: %s%s\n", e == ESP_OK ? "OK" : "FAIL",
+           e == ESP_OK ? "" : rec_mode_last_error());
     return 0;
 }
 
@@ -48,11 +52,10 @@ static int cmd_rec_stop(int argc, char **argv)
 static int cmd_rec_status(int argc, char **argv)
 {
     (void)argc; (void)argv;
-    printf("recording=%d pending_upload=%d last_err=%s mounted=%d\n",
-           rec_mode_active(), rec_upload_pending(),
-           rec_mode_last_error()[0] ? rec_mode_last_error() : "-",
-           frec_store_is_mounted());
-    printf("heap=%u B\n", (unsigned)esp_get_free_heap_size());
+    printf("recording=%d pending_upload=%d mounted=%d heap=%uB\n",
+           rec_mode_active(), rec_upload_pending(), frec_store_is_mounted(),
+           (unsigned)esp_get_free_heap_size());
+    if (rec_mode_last_error()[0]) printf("last_err=%s\n", rec_mode_last_error());
     return 0;
 }
 
@@ -88,40 +91,89 @@ static int cmd_reboot(int argc, char **argv)
     return 0;
 }
 
+static const cmd_t CMDS[] = {
+    { "rec-start",  "进入熄屏录音模式",        cmd_rec_start },
+    { "rec-stop",   "结束录音并亮屏",          cmd_rec_stop },
+    { "rec-status", "录音/上传/存储/内存状态", cmd_rec_status },
+    { "batt",       "CW2017 电量/电压",        cmd_batt },
+    { "time",       "当前墙钟毫秒（0=未校时）", cmd_time },
+    { "kick",       "通知上传任务排空待传段",  cmd_kick },
+    { "reboot",     "重启设备",                cmd_reboot },
+};
+
+static void dispatch(char *line)
+{
+    while (*line == ' ') line++;
+    if (!*line) return;
+    char *argv[8];
+    int argc = 0;
+    char *save = NULL;
+    for (char *p = strtok_r(line, " ", &save); p && argc < 8; p = strtok_r(NULL, " ", &save)) {
+        argv[argc++] = p;
+    }
+    if (argc == 0) return;
+    if (strcmp(argv[0], "help") == 0) {
+        for (size_t i = 0; i < sizeof(CMDS) / sizeof(CMDS[0]); i++) {
+            printf("%-12s %s\n", CMDS[i].name, CMDS[i].help);
+        }
+        return;
+    }
+    for (size_t i = 0; i < sizeof(CMDS) / sizeof(CMDS[0]); i++) {
+        if (strcmp(argv[0], CMDS[i].name) == 0) {
+            CMDS[i].fn(argc, argv);
+            fflush(stdout);
+            return;
+        }
+    }
+    printf("unknown: %s（help 看命令表）\n", argv[0]);
+    fflush(stdout);
+}
+
+static void console_task(void *arg)
+{
+    (void)arg;
+    char line[LINE_MAX];
+    size_t n = 0;
+    uint8_t ch;
+    for (;;) {
+        int r = usb_serial_jtag_read_bytes(&ch, 1, pdMS_TO_TICKS(100));
+        if (r <= 0) continue;
+        if (ch == '\r' || ch == '\n') {
+            if (n > 0) {
+                line[n] = '\0';
+                dispatch(line);
+                n = 0;
+            }
+            continue;
+        }
+        if (ch == 0x08 || ch == 0x7F) {          // 退格
+            if (n > 0) n--;
+            continue;
+        }
+        if (n + 1 < sizeof(line)) line[n++] = (char)ch;
+    }
+}
+
 esp_err_t badge_console_start(void)
 {
     static bool s_started;
     if (s_started) return ESP_OK;
 
-    esp_console_repl_config_t repl = ESP_CONSOLE_REPL_CONFIG_DEFAULT();
-    repl.prompt = "badge> ";
-    repl.max_history_len = 8;
-
-    esp_console_cmd_t cmds[] = {
-        { .command = "rec-start", .help = "进入熄屏录音模式", .hint = NULL, .func = cmd_rec_start },
-        { .command = "rec-stop", .help = "结束录音并亮屏", .hint = NULL, .func = cmd_rec_stop },
-        { .command = "rec-status", .help = "录音/上传/存储状态", .hint = NULL, .func = cmd_rec_status },
-        { .command = "batt", .help = "CW2017 电量/电压", .hint = NULL, .func = cmd_batt },
-        { .command = "time", .help = "当前墙钟毫秒（0=未校时）", .hint = NULL, .func = cmd_time },
-        { .command = "kick", .help = "通知上传任务排空待传段", .hint = NULL, .func = cmd_kick },
-        { .command = "reboot", .help = "重启设备", .hint = NULL, .func = cmd_reboot },
+    usb_serial_jtag_driver_config_t cfg = {
+        .rx_buffer_size = RX_BUF,
+        .tx_buffer_size = 256,
     };
-    for (size_t i = 0; i < sizeof(cmds) / sizeof(cmds[0]); i++) {
-        ESP_ERROR_CHECK(esp_console_cmd_register(&cmds[i]));
-    }
-
-    esp_console_repl_t *repl_if = NULL;
-    esp_err_t e = esp_console_new_repl_usb_serial_jtag(&repl, &repl_if);
+    esp_err_t e = usb_serial_jtag_driver_install(&cfg);
     if (e != ESP_OK) {
-        ESP_LOGE(TAG, "REPL 创建失败: %s", esp_err_to_name(e));
+        ESP_LOGE(TAG, "USB-Serial-JTAG 驱动安装失败: %s", esp_err_to_name(e));
         return e;
     }
-    e = esp_console_start_repl(repl_if);
-    if (e != ESP_OK) {
-        ESP_LOGE(TAG, "REPL 启动失败: %s", esp_err_to_name(e));
-        return e;
+    if (xTaskCreate(console_task, "badge_cli", 4096, NULL, 4, NULL) != pdPASS) {
+        usb_serial_jtag_driver_uninstall();
+        return ESP_ERR_NO_MEM;
     }
     s_started = true;
-    ESP_LOGI(TAG, "USB 控制台就绪（rec-start/rec-stop/rec-status/batt/time/kick/reboot）");
+    printf("\nbadge> 命令行就绪（help 查看命令表）\n");
+    fflush(stdout);
     return ESP_OK;
 }
