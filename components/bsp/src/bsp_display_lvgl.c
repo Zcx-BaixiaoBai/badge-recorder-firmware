@@ -25,10 +25,10 @@ lv_display_t *bsp_lvgl_init(void) {
     const lvgl_port_display_cfg_t dc = {
         .panel_handle = bsp_display_panel(),
         .io_handle    = bsp_display_io(),
-        // ⚠ C3 无 PSRAM,DMA 只能用内部 RAM(总共约 150KB)。
-        // 10 行单缓冲 ≈ 4.8KB：录音产品要给 Opus 编码器(~25KB) + WiFi(~35KB)
-        // 腾堆（实测 20 行时 WiFi 后空闲 23.4KB < Opus 需求）。刷新略慢但稳。
-        .buffer_size   = (uint32_t)BSP_LCD_W * 10,
+        // ⚠ C3 无 PSRAM,DMA 只能用内部 RAM。4 行 ≈ 1.9KB：RAM 预算极限
+        // （WiFi+编码器常驻后稳态堆 ~10KB，录音任务 4KB 栈靠这省出的空间）。
+        // 刷新慢（文本列表可接受）。
+        .buffer_size   = (uint32_t)BSP_LCD_W * 4,
         .double_buffer = false,
         .hres = BSP_LCD_W, .vres = BSP_LCD_H,
         // 旋转/镜像必须在这里配:esp_lvgl_port 注册显示时会重新下发 MADCTL,
