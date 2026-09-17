@@ -35,7 +35,10 @@ esp_err_t audio_init(void)
 // 另：每次录音前 reopen codec（修长时间空闲后首次读失败）+ 播提示音
 // （用户反馈 + TX 通路预热，官方 demo 同样是先放音再录音）。
 
-#define REC_SB_BYTES   (32 * 1024)   // 流缓冲 ≈1s 音频余量
+// 8KB ≈ 170ms 音频余量（24k/16bit 单声道 48KB/s）。录音任务每 60ms 消费一帧，
+// 优先级 5 高于上传任务 4，WiFi 突发期间仍持续消费不积压。省出的 24KB 系统堆
+// 给 FAT 挂载与 Opus 编码器（实测 32KB 缓冲时空闲堆不足）。
+#define REC_SB_BYTES   (8 * 1024)
 #define REC_CHUNK      2048          // 采集块 64ms
 #define REC_WARMUP     2             // 丢弃前 2 块（提示音尾 + DMA 陈旧数据）
 

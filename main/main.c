@@ -114,7 +114,7 @@ static void build_ws_list(void)
         rows[i].main = s_ws[i].label;
         rows[i].right = notes[i];
     }
-    ui_set_header("ZCode 工作区");
+    ui_set_header("远控工作区");
     ui_show_list(rows, s_ws_n, ui_list_sel() < s_ws_n ? ui_list_sel() : 0);
     ui_set_hint("上下选择  OK进入");
 }
@@ -226,7 +226,7 @@ static void refresh_lists(void)
     ui_set_busy("加载工作区…");
     if (gw_fetch_workspaces(s_ws, GW_MAX_WS, &s_ws_n) != ESP_OK || s_ws_n == 0) {
         ui_set_busy(NULL);
-        ui_set_header("ZCode 工牌");
+        ui_set_header("工牌录音");
         ui_show_detail("网关不可达");
         ui_set_error("无法获取工作区列表");
         ui_set_hint("长按OK进设置检查配网");
@@ -265,33 +265,28 @@ static void enter_workspace(void)
 // ---------- 设置 / 首次引导 ----------
 
 static const char *GUIDE_TEXT =
-    "【获取网关】先下载本仓库 gateway/ 目录：\n"
-    "github.com/Zcx-BaixiaoBai/zcode-passport\n"
-    "（内有 start-gateway.bat / demo-gateway.py / QUICKSTART.md）\n"
-    "【准备网关】电脑上二选一：\n"
-    "· 体验：python demo-gateway.py（免 ZCode、免令牌）。\n"
-    "· 正式：双击 start-gateway.bat（需 link.txt 配对链接 + 自设令牌）。\n"
-    "【网关侧配置】运行 gateway/setup-gateway.py：\n"
-    "· 粘贴 ZCode 桌面端生成的远控链接（存 link.txt）；\n"
-    "· 自动生成令牌（写 gateway-config.json）；\n"
-    "· 语音：ASR 密钥存 asr.env(腾讯云)，TTS 用 edge-tts；\n"
-    "· 打印本机局域网 IP 与端口，供下面填写。\n"
-    "【网关地址】= 运行网关那台电脑的局域网 IP + 端口。\n"
-    "· 电脑开 cmd 输入 ipconfig，找 192.168.x.x 或 10.x.x.x。\n"
-    "· 例：http://10.0.0.5:8788（手机/工牌与电脑同一 WiFi；端口以启动提示为准）。\n"
-    "【令牌】demo 留空；正式网关填 gateway-config.json 里的 token。\n"
+    "【服务端】recorder-server 跑在网关主机上：\n"
+    "github.com/Zcx-BaixiaoBai/badge-recorder-firmware\n"
+    "（README 有快速开始：pip install + serve）\n"
+    "【网关地址】= 部署 recorder-server 的主机 IP + 端口。\n"
+    "· 局域网：电脑 cmd 输 ipconfig，找 192.168.x.x / 10.x.x.x；\n"
+    "· 公网（推荐，外出也能传）：直接填服务器 IP；\n"
+    "· 例：http://10.0.0.5:8788（工牌与服务器网络可达）。\n"
+    "【令牌】recorder-server 配置文件里的 token。\n"
     "【配网步骤】\n"
     "1 长按 OK → 设置 → 配网设置。\n"
-    "2 手机连热点 ZCode-Badge-Setup，浏览器开 http://192.168.4.1。\n"
+    "2 手机连热点 Badge-Setup，浏览器开 http://192.168.4.1。\n"
     "3 填 WiFi(2.4G)、网关地址、令牌，保存后工牌重启。\n"
-    "之后：首页浏览会话，短按 OK 说话提问。（本页可上下键滚动）";
+    "之后：设置 → 熄屏录音模式 开始录音，长按 OK 结束。\n"
+    "录音自动分段上传，每日分析出纪要与日报。\n"
+    "（本页可上下键滚动）";
 
 static void show_onboarding(void)
 {
     s_level = LVL_WS;
     s_onboarding = true;
     ui_set_header("首次使用");
-    ui_show_detail("欢迎使用 ZCode 语音工牌");
+    ui_show_detail("欢迎使用工牌录音");
     ui_set_state("还未配置网络");
     ui_set_answer(GUIDE_TEXT);
     ui_set_hint("长按OK进设置去配网");
@@ -381,8 +376,8 @@ static void settings_activate(int sel)
         s_level = LVL_SUBPAGE;
         ui_set_header("关于");
         ui_show_detail("关于");
-        ui_set_state("ZCode 语音工牌 v0.3.0");
-        ui_set_answer("语音遥控 ZCode 会话。\n网关：gateway.py（需 ZCode）\n或 demo-gateway.py（免 ZCode 体验）。");
+        ui_set_state("工牌录音固件 v0.4.7");
+        ui_set_answer("熄屏录音 + 分段上传 + 每日纪要。\n服务端：recorder-server\n（badge-recorder-firmware 仓库）。");
         ui_set_hint("长按OK返回设置");
         break;
     default:  // 返回
@@ -398,7 +393,7 @@ static void badge_worker(void *arg)
         ui_set_busy("连接 WiFi…");
         if (!wifi_wait_connected(30)) {
             ui_set_busy(NULL);
-            ui_set_header("ZCode 工牌");
+            ui_set_header("工牌录音");
             ui_show_detail("WiFi 连不上");
             ui_set_error("检查 WiFi 名称/密码");
             ui_set_hint("长按OK进设置");
@@ -533,7 +528,7 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user)
 
 void app_main(void)
 {
-    ESP_LOGI(TAG, "ZCode 工牌固件启动");
+    ESP_LOGI(TAG, "工牌录音固件启动");
 
     esp_err_t nvs = nvs_flash_init();
     if (nvs == ESP_ERR_NVS_NO_FREE_PAGES || nvs == ESP_ERR_NVS_NEW_VERSION_FOUND) {
@@ -554,6 +549,12 @@ void app_main(void)
 
     s_evq = xQueueCreate(16, sizeof(badge_ev_t));
     if (bsp_button_init(on_key, NULL) != ESP_OK) ESP_LOGE(TAG, "按键初始化失败");
+
+    // 开机即挂载 recordings 分区（含掉电恢复）：此刻堆最富裕；WiFi 连上后
+    // 空闲堆只剩 ~20KB，届时挂载会 ESP_ERR_NO_MEM。
+    if (frec_store_mount() != ESP_OK) {
+        ESP_LOGW(TAG, "recordings 分区不可用（录音模式将无法使用）");
+    }
 
     cfg_load(&g_cfg);
     ui_set_mute(g_cfg.mute);
