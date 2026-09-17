@@ -168,7 +168,7 @@ esp_err_t badge_console_start(void)
         ESP_LOGE(TAG, "USB-Serial-JTAG 驱动安装失败: %s", esp_err_to_name(e));
         return e;
     }
-    if (xTaskCreate(console_task, "badge_cli", 4096, NULL, 4, NULL) != pdPASS) {
+    if (xTaskCreate(console_task, "badge_cli", 3072, NULL, 4, NULL) != pdPASS) {
         usb_serial_jtag_driver_uninstall();
         return ESP_ERR_NO_MEM;
     }
