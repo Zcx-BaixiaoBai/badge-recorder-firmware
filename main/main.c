@@ -26,9 +26,6 @@
 #include "rec_upload.h"
 #include "time_sync.h"
 
-#include "esp_audio_enc.h"
-#include "esp_opus_enc.h"
-
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "esp_system.h"
@@ -571,29 +568,11 @@ void app_main(void)
     rec_upload_init();              // 上传任务（无线电占空比；kick 驱动）
     s_onboarding = !g_cfg.ssid[0];
 
-    // Opus 编码器开机探测（WiFi 启动前，堆 ~58KB）：区分"堆不够"与"库不可用"
-    // —— 运行期 WiFi 后堆 ~28KB 时所有配置 open 均 ret:-7（v0.4.14 实测）
-    {
-        esp_opus_enc_config_t probe = {
-            .sample_rate = 16000, .channel = 1, .bits_per_sample = 16,
-            .bitrate = 16000, .frame_duration = ESP_OPUS_ENC_FRAME_DURATION_60_MS,
-            .application_mode = ESP_OPUS_ENC_APPLICATION_VOIP, .complexity = 0,
-        };
-        void *hd = NULL;
-        esp_opus_enc_register();
-        esp_audio_err_t pr = esp_opus_enc_open(&probe, sizeof(probe), &hd);
-        ESP_LOGW(TAG, "[开机探测 16k/mono/60ms/VOIP] ret=%d hd=%p 空闲堆=%uB",
-                 (int)pr, hd, (unsigned)esp_get_free_heap_size());
-        if (pr == ESP_AUDIO_ERR_OK) {
-            esp_audio_enc_info_t info;
-            if (esp_opus_enc_get_info(hd, &info) == ESP_AUDIO_ERR_OK) {
-                ESP_LOGW(TAG, "[开机探测] 编码器信息: rate=%u ch=%u bitrate=%u",
-                         (unsigned)info.sample_rate, (unsigned)info.channel,
-                         (unsigned)info.bitrate);
-            }
-            esp_opus_enc_close(hd);
-            ESP_LOGW(TAG, "[开机探测] close 后空闲堆=%uB", (unsigned)esp_get_free_heap_size());
-        }
+    // Opus 编码器开机预开并永久持有：必须在 WiFi 之前——WiFi 之后堆碎片化，
+    // 最大连续块 < 编码器状态 ~25KB，运行期 open 必败 ret:-7（v0.4.17 实测
+    // 开机 ret=0 破案）。占用 ~25KB 但换来录音可用。
+    if (rec_mode_init() != ESP_OK) {
+        ESP_LOGW(TAG, "录音不可用（Opus 编码器开机预开失败，其余功能正常）");
     }
 
     xTaskCreate(badge_worker, "badge_worker", 12288, NULL, 5, NULL);

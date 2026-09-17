@@ -184,7 +184,7 @@ static void rec_task(void *arg)
         }
     }
 
-    // 收尾：终结当前段、通知上传排空、关编码器。采集停止由 rec_mode_stop() 触发（见上）。
+    // 收尾：终结当前段、通知上传排空。采集停止由 rec_mode_stop() 触发（见上）。
     if (s_seg_frames > 0) {
         if (frec_seg_end() != ESP_OK) {
             ESP_LOGE(TAG, "终结段失败（掉电恢复会按帧扫描兜底）");
@@ -193,9 +193,8 @@ static void rec_task(void *arg)
         frec_seg_end();             // 空段也正常关闭（头部 payload=0，服务端忽略）
     }
     rec_upload_kick();              // 最后一段：上传任务会在无线电可用时排空
-    if (s_enc) { esp_opus_enc_close(s_enc); s_enc = NULL; }
-    free(s_opus_buf);
-    s_opus_buf = NULL;
+    // 编码器与输出缓冲永久持有（开机分配防碎片化），会话结束只 reset
+    esp_opus_enc_reset(s_enc);
     s_active = false;
     xSemaphoreGive(s_done);
     vTaskDelete(NULL);
@@ -206,6 +205,49 @@ static void rec_task(void *arg)
 bool rec_mode_active(void) { return s_active; }
 
 const char *rec_mode_last_error(void) { return s_err; }
+
+esp_err_t rec_mode_init(void)
+{
+    if (s_enc) return ESP_OK;                 // 幂等
+
+    esp_opus_enc_config_t cfg = {
+        .sample_rate      = ENC_RATE,
+        .channel          = 1,
+        .bits_per_sample  = 16,
+        .bitrate          = 16000,
+        .frame_duration   = ESP_OPUS_ENC_FRAME_DURATION_60_MS,
+        .application_mode = ESP_OPUS_ENC_APPLICATION_VOIP,
+        .complexity       = 0,
+        .enable_fec       = false,
+        .enable_dtx       = false,
+        .enable_vbr       = false,
+    };
+    esp_opus_enc_register();
+    esp_audio_err_t oe = esp_opus_enc_open(&cfg, sizeof(cfg), &s_enc);
+    if (oe != ESP_AUDIO_ERR_OK || !s_enc) {
+        s_enc = NULL;
+        ESP_LOGE(TAG, "开机预开 Opus 编码器失败 ret=%d（录音不可用）", (int)oe);
+        return ESP_FAIL;
+    }
+    int in_size = 0, out_size = 0;
+    esp_opus_enc_get_frame_size(s_enc, &in_size, &out_size);
+    if (in_size != BYTES_OUT) {
+        ESP_LOGW(TAG, "编码输入帧 %dB ≠ 预期 %dB", in_size, (int)BYTES_OUT);
+    }
+    s_opus_cap = out_size > 2048 ? out_size : 2048;
+    // 输出缓冲也开机分配：避免运行期碎片化下 malloc 失败
+    s_opus_buf = malloc((size_t)s_opus_cap);
+    if (!s_opus_buf) {
+        esp_opus_enc_close(s_enc);
+        s_enc = NULL;
+        ESP_LOGE(TAG, "开机分配编码输出缓冲失败（%dB）", s_opus_cap);
+        return ESP_ERR_NO_MEM;
+    }
+    if (!s_done) s_done = xSemaphoreCreateBinary();
+    ESP_LOGI(TAG, "Opus 编码器开机就绪（状态 ~25KB 永久持有；余堆 %u B）",
+             (unsigned)esp_get_free_heap_size());
+    return ESP_OK;
+}
 
 esp_err_t rec_mode_start(void)
 {
@@ -220,71 +262,18 @@ esp_err_t rec_mode_start(void)
         return ESP_FAIL;
     }
 
-    // --- 一次性四配置探测（定位 esp_opus_enc 在 C3 上的失败条件） ---
-    {
-        struct { const char *tag; esp_opus_enc_config_t cfg; } probes[] = {
-            { "8k/stereo/20ms/VOIP", { .sample_rate=8000, .channel=2, .bits_per_sample=16,
-              .bitrate=90000, .frame_duration=ESP_OPUS_ENC_FRAME_DURATION_20_MS,
-              .application_mode=ESP_OPUS_ENC_APPLICATION_VOIP, .complexity=0 } },
-            { "16k/mono/20ms/VOIP", { .sample_rate=16000, .channel=1, .bits_per_sample=16,
-              .bitrate=16000, .frame_duration=ESP_OPUS_ENC_FRAME_DURATION_20_MS,
-              .application_mode=ESP_OPUS_ENC_APPLICATION_VOIP, .complexity=0 } },
-            { "16k/mono/60ms/VOIP", { .sample_rate=16000, .channel=1, .bits_per_sample=16,
-              .bitrate=16000, .frame_duration=ESP_OPUS_ENC_FRAME_DURATION_60_MS,
-              .application_mode=ESP_OPUS_ENC_APPLICATION_VOIP, .complexity=0 } },
-            { "16k/mono/60ms/AUDIO", { .sample_rate=16000, .channel=1, .bits_per_sample=16,
-              .bitrate=16000, .frame_duration=ESP_OPUS_ENC_FRAME_DURATION_60_MS,
-              .application_mode=ESP_OPUS_ENC_APPLICATION_AUDIO, .complexity=0 } },
-        };
-        for (size_t i = 0; i < sizeof(probes)/sizeof(probes[0]); i++) {
-            void *probe_hd = NULL;
-            esp_audio_err_t pr = esp_opus_enc_open(&probes[i].cfg, sizeof(esp_opus_enc_config_t), &probe_hd);
-            ESP_LOGW(TAG, "探测[%s] ret=%d hd=%p", probes[i].tag, (int)pr, probe_hd);
-            if (probe_hd) esp_opus_enc_close(probe_hd);
+    if (!s_enc || !s_opus_buf) {
+        // 编码器未在开机预开（理论上 main 已调 rec_mode_init）：此时堆碎片化，
+        // 尝试一次但大概率失败——真正的修复是开机持有（v0.4.17 实测破案）
+        if (rec_mode_init() != ESP_OK) {
+            snprintf(s_err, sizeof(s_err), "Opus 编码器不可用（须开机预开）");
+            return ESP_FAIL;
         }
     }
-
-    esp_opus_enc_config_t cfg = {
-        .sample_rate      = ENC_RATE,
-        .channel          = 1,
-        .bits_per_sample  = 16,
-        .bitrate          = 16000,
-        .frame_duration   = ESP_OPUS_ENC_FRAME_DURATION_60_MS,
-        .application_mode = ESP_OPUS_ENC_APPLICATION_VOIP,
-        .complexity       = 0,
-        .enable_fec       = false,
-        .enable_dtx       = false,
-        .enable_vbr       = false,
-    };
-    // 注册路径（esp_audio_codec 文档：先 register 再 open；直接 open 在部分
-    // 版本会 ESP_AUDIO_ERR_NOT_SUPPORT(-7)——真机 v0.4.12 实测）
-    esp_opus_enc_register();
-    esp_audio_err_t oe = esp_opus_enc_open(&cfg, sizeof(cfg), &s_enc);
-    if (oe != ESP_AUDIO_ERR_OK || !s_enc) {
-        snprintf(s_err, sizeof(s_err), "Opus 编码器创建失败(ret=%d)", (int)oe);
-        ESP_LOGE(TAG, "esp_opus_enc_open ret=%d（-2=内存 -7=未注册/不支持）", (int)oe);
-        return ESP_FAIL;
-    }
-    ESP_LOGI(TAG, "Opus 编码器就绪（编码器后空闲堆 %u B）", (unsigned)esp_get_free_heap_size());
-    int in_size = 0, out_size = 0;
-    esp_opus_enc_get_frame_size(s_enc, &in_size, &out_size);
-    if (in_size != BYTES_OUT) {
-        ESP_LOGW(TAG, "编码输入帧 %dB ≠ 预期 %dB", in_size, (int)BYTES_OUT);
-    }
-    s_opus_cap = out_size > 2048 ? out_size : 2048;
-    s_opus_buf = malloc((size_t)s_opus_cap);
-    if (!s_opus_buf) {
-        esp_opus_enc_close(s_enc);
-        s_enc = NULL;
-        snprintf(s_err, sizeof(s_err), "编码缓冲分配失败");
-        return ESP_ERR_NO_MEM;
-    }
+    esp_opus_enc_reset(s_enc);               // 复用编码器：状态清零
 
     if (frec_seg_begin(time_now_ms(), NULL) != ESP_OK) {
-        free(s_opus_buf);
-        s_opus_buf = NULL;
-        esp_opus_enc_close(s_enc);
-        s_enc = NULL;
+        // 编码器与输出缓冲永久持有，失败只回滚段，不释放它们
         snprintf(s_err, sizeof(s_err), "段文件创建失败");
         return ESP_FAIL;
     }
@@ -293,15 +282,10 @@ esp_err_t rec_mode_start(void)
     s_staged = 0;
     if (audio_rec_start() != ESP_OK) {
         frec_seg_end();
-        free(s_opus_buf);
-        s_opus_buf = NULL;
-        esp_opus_enc_close(s_enc);
-        s_enc = NULL;
         snprintf(s_err, sizeof(s_err), "采集启动失败");
         return ESP_FAIL;
     }
 
-    if (!s_done) s_done = xSemaphoreCreateBinary();
     s_active = true;
     s_run = true;
     if (xTaskCreate(rec_task, "rec_task", 8192, NULL, 5, NULL) != pdPASS) {
@@ -309,10 +293,6 @@ esp_err_t rec_mode_start(void)
         s_run = false;
         audio_rec_cancel();
         frec_seg_end();
-        free(s_opus_buf);
-        s_opus_buf = NULL;
-        esp_opus_enc_close(s_enc);
-        s_enc = NULL;
         snprintf(s_err, sizeof(s_err), "录音任务创建失败");
         return ESP_ERR_NO_MEM;
     }

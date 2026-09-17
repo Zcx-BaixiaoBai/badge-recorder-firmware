@@ -10,8 +10,13 @@
 #include "esp_err.h"
 #include <stdbool.h>
 
+// 开机预开 Opus 编码器（必须在 WiFi 启动前调用：WiFi 之后堆碎片化，
+// 最大连续块 < 编码器状态 ~25KB，运行期 open 必败 ret:-7——v0.4.17 开机
+// 探测实测 ret=0 破案）。编码器此后永久持有，录音会话经 reset 复用。幂等。
+esp_err_t rec_mode_init(void);
+
 // 进入录音模式（在 worker 上下文调用；调用方 main.c 会先 best-effort 校时）：
-// 挂载存储 → 起编码器/采集/录音任务 → 熄屏。成功后长按 OK 退出。
+// 挂载存储 → 起采集/录音任务 → 熄屏。成功后长按 OK 退出。
 esp_err_t rec_mode_start(void);
 
 // 退出录音模式：置停 → 等任务终结段（最长 8s）→ 亮屏。
