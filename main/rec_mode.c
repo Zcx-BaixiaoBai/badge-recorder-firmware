@@ -69,8 +69,8 @@ static const char *TAG = "recmode";
 #define SYNC_DRAIN_MS     (4 * 60000)                     // 同步窗口排空上限
 #define PEND_GUARD_BYTES  (900 * 1024)                    // 遗留待传超过即拒开新节
                                                 //（一节 3.66MB + 遗留 ≤0.9MB < 4.625MiB 环）
-#define REC_STACK_BYTES   14336                           // 14KB 静态专栈：silk 20ms
-                                                // 实测 12.4KB + 1.9KB 裕量（见 s_rec_stack 注释）
+#define REC_STACK_BYTES   16384                           // 16KB 常驻 .bss 专栈：silk 链
+                                                // 实测 15.9KB + 0.9KB 裕量（见 s_rec_stack 注释）
 
 // 28 抽汉明窗低通（截止 7.2kHz@24k，阻带 8.2k 起 -26dB → 9k -60dB），Q14。
 // 生成方式：windowed-sinc，fc=7200/24000，汉明窗，归一化后量化。
@@ -82,9 +82,8 @@ static const int16_t s_fir[28] = {
 
 // ---- 状态 ----
 static volatile rec_phase_t s_phase = REC_PHASE_IDLE;
-static volatile bool s_run;         // rec_task 循环许可
+static volatile bool s_run;         // rec_task 会话许可（false=停车场）
 static volatile bool s_rec_done;    // rec_task 已收尾（worker 轮询转段用）
-static volatile bool s_audio_ready; // 采集已就绪（rec_task 起跑门槛）
 static volatile bool s_stop_req;    // 用户请求结束（含同步期：本节后不续录）
 static rec_start_mode_t s_mode = REC_MODE_MANUAL;
 static bool s_last_had_err;         // 上一节录音期是否出错（续录判定用）
@@ -102,15 +101,15 @@ static int16_t s_pcm16k[SAMPLES_OUT];
 static uint32_t s_seg_frames;       // 当前段已编码帧数
 static uint32_t s_sess_frames;      // 本节累计帧数（30 分钟上限）
 
-// rec_task 专栈（v0.4.33 堆上"借还"制）：v0.4.31 真机符号化定案——
-// silk_encode_frame_FIX(20ms) 栈深 ~12.4KB、celt(60ms) ~14KB。v0.4.32 尝试
-// 14KB .bss 静态栈 → 开机 esp_wifi_init NO_MEM（esf_buf_setup_static 分配
-// 失败——启动预算容不下常驻 14KB）。改为：会话开始（WiFi 已 deinit，空闲
-// 43.3KB/最大洞 14848B）时 heap_caps_malloc 借出，stop_capture 归还——
-// 同步窗口 wifi re-init 需完整 ~29.5KB，不能被占。分配失败=优雅拒开新节。
-// xTaskCreateStatic 保证任务创建本身不再依赖堆形状。
+// rec_task 常驻任务 + .bss 静态专栈（v0.4.37 终局方案）：esp_audio_codec
+// 的 libopus 是预编译 .a（-O2 无效），silk 链栈深固定 ~15.9KB，deinit 后
+// 堆最大洞 14.95KB 结构性装不下（借还制 5 版真机验证均差 ~1KB）。
+// -O2 根因修复后开机预算翻出空间（pre-wifi 52.7KB - 16KB 栈 = 36.3KB >
+// wifi init 29.5KB，margin 6.8KB；-Og 时代只有 30.9KB 所以 v0.4.32 失败）。
+// 任务开机即建、停车场式待命（等 s_run）；会话间不删——栈永不归还，
+// 同步窗口 wifi re-init 有 34.5KB 可用（原借还制腾的那 14KB 不再需要）。
 static StaticTask_t s_rec_tcb;
-static StackType_t *s_rec_stack;
+static StackType_t s_rec_stack[REC_STACK_BYTES];
 
 // ---- 屏幕时序 ----
 // ★ v0.4.30：LVGL API 必须持锁调用（ui_badge 全部走 bsp_lvgl_lock，v0.4.29
@@ -179,82 +178,85 @@ static void fatal(const char *why)
     s_run = false;
 }
 
+// 常驻录音任务：停车场式待命（等 s_run）→ 录一节 → 收尾 → 回停车场。
+// 不 vTaskDelete——.bss 专栈永不归还（v0.4.37，见 s_rec_stack 注释）。
 static void rec_task(void *arg)
 {
     (void)arg;
-    s_seg_frames = 0;
-    s_sess_frames = 0;
-    while (!s_audio_ready) {        // 起跑门槛：先建本任务（16KB 大块优先分配），
-        if (!s_run) { s_rec_done = true; vTaskDelete(NULL); }  // 后起采集再放行
-        vTaskDelay(pdMS_TO_TICKS(10));
-    }
     for (;;) {
-        if (!s_run) break;          // 正常停止：排空后退出
-        size_t got = 0;
-        esp_err_t e = audio_rec_read(s_stage + s_staged, BYTES_IN - s_staged,
-                                     &got, 2000);
-        if (e == ESP_ERR_TIMEOUT) { fatal("麦克风无数据（超时）"); break; }
-        if (e != ESP_OK)            { fatal("采集失败"); break; }
-        if (got == 0) break;        // 已停止且排空
-        s_staged += got;
-        if (s_staged < BYTES_IN) continue;
-        s_staged = 0;               // 攒满一帧 60ms
+        // 停车场：等会话开始（start_capture 置 s_run 前已备好采集）
+        while (!s_run) vTaskDelay(pdMS_TO_TICKS(50));
 
-        resample_block((const int16_t *)s_stage, s_pcm16k);
+        s_seg_frames = 0;
+        s_sess_frames = 0;
+        for (;;) {
+            if (!s_run) break;          // 正常停止：排空后退出
+            size_t got = 0;
+            esp_err_t e = audio_rec_read(s_stage + s_staged, BYTES_IN - s_staged,
+                                         &got, 2000);
+            if (e == ESP_ERR_TIMEOUT) { fatal("麦克风无数据（超时）"); break; }
+            if (e != ESP_OK)            { fatal("采集失败"); break; }
+            if (got == 0) break;        // 已停止且排空
+            s_staged += got;
+            if (s_staged < BYTES_IN) continue;
+            s_staged = 0;               // 攒满一帧 10ms
 
-        esp_audio_enc_in_frame_t in = {
-            .buffer = (uint8_t *)s_pcm16k, .len = BYTES_OUT,
-        };
-        esp_audio_enc_out_frame_t outf = {
-            .buffer = s_opus_buf, .len = (uint32_t)s_opus_cap,
-        };
-        esp_audio_err_t ae = esp_opus_enc_process(s_enc, &in, &outf);
-        if (ae != ESP_AUDIO_ERR_OK) { fatal("Opus 编码失败"); break; }
-        if (outf.encoded_bytes > 0) {
-            if (outf.encoded_bytes > 0xFFFF) { fatal("帧超长"); break; }
-            if (frec_seg_frame(s_opus_buf, (uint16_t)outf.encoded_bytes) != ESP_OK) {
-                fatal("写存储失败（分区满？）");
-                break;
+            resample_block((const int16_t *)s_stage, s_pcm16k);
+
+            esp_audio_enc_in_frame_t in = {
+                .buffer = (uint8_t *)s_pcm16k, .len = BYTES_OUT,
+            };
+            esp_audio_enc_out_frame_t outf = {
+                .buffer = s_opus_buf, .len = (uint32_t)s_opus_cap,
+            };
+            esp_audio_err_t ae = esp_opus_enc_process(s_enc, &in, &outf);
+            if (ae != ESP_AUDIO_ERR_OK) { fatal("Opus 编码失败"); break; }
+            if (outf.encoded_bytes > 0) {
+                if (outf.encoded_bytes > 0xFFFF) { fatal("帧超长"); break; }
+                if (frec_seg_frame(s_opus_buf, (uint16_t)outf.encoded_bytes) != ESP_OK) {
+                    fatal("写存储失败（分区满？）");
+                    break;
+                }
+                s_seg_frames += 1;
+                s_sess_frames += 1;
             }
-            s_seg_frames += 1;
-            s_sess_frames += 1;
-        }
 
-        if (s_sess_frames >= SESSION_FRAMES) {    // 30 分钟到点：收尾当前段
-            ESP_LOGI(TAG, "30 分钟到点（%u 帧，电量 %d%%），自动收尾",
-                     (unsigned)s_sess_frames, bsp_battery_soc());
-            s_run = false;
-            continue;                             // → 循环顶 break → 收尾
-        }
+            if (s_sess_frames >= SESSION_FRAMES) {    // 30 分钟到点：收尾当前段
+                ESP_LOGI(TAG, "30 分钟到点（%u 帧，电量 %d%%），自动收尾",
+                         (unsigned)s_sess_frames, bsp_battery_soc());
+                s_run = false;
+                continue;                             // → 循环顶 break → 收尾
+            }
 
-        if (s_seg_frames >= FRAMES_PER_SEG) {     // 5 分钟换段
-            if (frec_seg_end() == ESP_OK) {
-                // 功耗实测数据源（M0）：换段时打电量/电压/空闲堆，COM10 日志采集
-                ESP_LOGI(TAG, "段完成：电量 %d%% (%dmV)，空闲堆 %u B",
-                         bsp_battery_soc(), bsp_battery_mv(),
-                         (unsigned)esp_get_free_heap_size());
-                frec_seg_begin(time_now_ms(), NULL);
-                s_seg_frames = 0;
-                rec_upload_kick();                // 无线电关闭期是空操作，留给同步窗口
-            } else {
-                fatal("换段失败");
-                break;
+            if (s_seg_frames >= FRAMES_PER_SEG) {     // 5 分钟换段
+                if (frec_seg_end() == ESP_OK) {
+                    // 功耗实测数据源（M0）：换段时打电量/电压/空闲堆，COM10 日志采集
+                    ESP_LOGI(TAG, "段完成：电量 %d%% (%dmV)，空闲堆 %u B",
+                             bsp_battery_soc(), bsp_battery_mv(),
+                             (unsigned)esp_get_free_heap_size());
+                    frec_seg_begin(time_now_ms(), NULL);
+                    s_seg_frames = 0;
+                    rec_upload_kick();                // 无线电关闭期是空操作，留给同步窗口
+                } else {
+                    fatal("换段失败");
+                    break;
+                }
             }
         }
-    }
 
-    // 收尾：终结当前段。采集停止由 stop_capture() / rec_mode_stop() 触发。
-    if (s_seg_frames > 0) {
-        if (frec_seg_end() != ESP_OK) {
-            ESP_LOGE(TAG, "终结段失败（掉电恢复会按帧扫描兜底）");
+        // 收尾：终结当前段。采集停止由 stop_capture() / rec_mode_stop() 触发。
+        if (s_seg_frames > 0) {
+            if (frec_seg_end() != ESP_OK) {
+                ESP_LOGE(TAG, "终结段失败（掉电恢复会按帧扫描兜底）");
+            }
+        } else {
+            frec_seg_end();             // 空段也正常关闭（头部 payload=0，服务端忽略）
         }
-    } else {
-        frec_seg_end();             // 空段也正常关闭（头部 payload=0，服务端忽略）
+        // 编码器与输出缓冲永久持有（开机分配防碎片化），会话结束只 reset
+        esp_opus_enc_reset(s_enc);
+        s_rec_done = true;              // worker 轮询发现后转 SYNC
+        // 不删任务：回停车场等下一节
     }
-    // 编码器与输出缓冲永久持有（开机分配防碎片化），会话结束只 reset
-    esp_opus_enc_reset(s_enc);
-    s_rec_done = true;              // worker 轮询发现后转 SYNC
-    vTaskDelete(NULL);
 }
 
 // ---- 会话编排（v0.4.30：无独立会话任务，worker 轮询驱动）----
@@ -264,85 +266,42 @@ static void rec_task(void *arg)
 // 录音期堆多 4KB、少一个碎片源。
 
 // 本节启动（rec_mode_start 内部，worker 或 console 上下文）。失败时 s_err 已填。
+// rec_task 常驻（rec_mode_init 已建），这里只做段开启+采集启动+放行。
 static esp_err_t start_capture(void)
 {
-    ESP_LOGI(TAG, "一节开始（%s，空闲堆 %u B，最大连续块 %u B）",
+    ESP_LOGI(TAG, "一节开始（%s，空闲堆 %u B）",
              s_mode == REC_MODE_AUTO ? "续录" : "手动",
-             (unsigned)esp_get_free_heap_size(),
-             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+             (unsigned)esp_get_free_heap_size());
 
     esp_opus_enc_reset(s_enc);               // 复用编码器：状态清零
     resample_reset();
     s_staged = 0;
     s_rec_done = false;
-    s_audio_ready = false;
 
     if (frec_seg_begin(time_now_ms(), NULL) != ESP_OK) {
         snprintf(s_err, sizeof(s_err), "段创建失败（分区满？先同步）");
         return ESP_FAIL;
     }
 
-    s_run = true;
-    // ★ 栈缓冲"借"自 deinit 后的堆：优先 16KB，洞不够就借满最大洞（≥12KB
-    // 才开工）。v0.4.36 根因修复后（-O2，见 sdkconfig），-Og 时代 15.9KB
-    // 的 silk 链预计缩到 4-8KB；借还制与堆碎片解耦由 xTaskCreateStatic 保证。
-    // stop_capture 归还（同步窗口 wifi re-init 需完整 ~29.5KB，栈不能占）。
-    size_t want = REC_STACK_BYTES;
-    size_t hole = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
-    if (hole < want) want = hole;
-    if (want < 12288) {
-        s_run = false;
-        frec_seg_end();
-        snprintf(s_err, sizeof(s_err), "栈洞不足（%uB < 12KB，稍后重试）",
-                 (unsigned)hole);
-        return ESP_ERR_NO_MEM;
-    }
-    s_rec_stack = heap_caps_malloc(want, MALLOC_CAP_INTERNAL);
-    if (!s_rec_stack) {
-        s_run = false;
-        frec_seg_end();
-        snprintf(s_err, sizeof(s_err), "栈缓冲分配失败");
-        return ESP_ERR_NO_MEM;
-    }
-    if (xTaskCreateStatic(rec_task, "rec_task", want, NULL, 5,
-                          s_rec_stack, &s_rec_tcb) == NULL) {
-        s_run = false;                       // 理论不可达（静态任务无 NO_MEM）
-        heap_caps_free(s_rec_stack);
-        s_rec_stack = NULL;
-        frec_seg_end();
-        snprintf(s_err, sizeof(s_err), "录音任务创建失败");
-        return ESP_FAIL;
-    }
-
     if (audio_rec_start() != ESP_OK) {
-        s_run = false;                       // rec_task 过门槛即自退
-        for (int i = 0; i < 20 && !s_rec_done; i++) vTaskDelay(pdMS_TO_TICKS(50));
-        vTaskDelay(pdMS_TO_TICKS(100));      // 确保 vTaskDelete 完成
-        heap_caps_free(s_rec_stack);
-        s_rec_stack = NULL;
+        s_run = false;                       // 采集失败：任务留在停车场
         frec_seg_end();
         snprintf(s_err, sizeof(s_err), "采集启动失败");
         return ESP_FAIL;
     }
-    s_audio_ready = true;                    // 放行 rec_task
+    s_run = true;                            // 放行常驻录音任务
 
     ESP_LOGI(TAG, "录音中（30 分钟上限，空闲堆 %u B）",
              (unsigned)esp_get_free_heap_size());
     return ESP_OK;
 }
 
-// 本节采集收尾（无论何种结束路径）：确保 cap_task 退出、归还借出的栈缓冲。
-//（150ms 延时保证 rec_task 的 vTaskDelete 已完成，栈可安全释放；同步窗口
-//  的 wifi re-init 需要完整 ~29.5KB，栈不能占着）
+// 本节采集收尾（无论何种结束路径）：确保 cap_task 退出。
 static void stop_capture(void)
 {
     audio_rec_stop();                        // cap_task 排空退出（一块 64ms）
     vTaskDelay(pdMS_TO_TICKS(150));
     audio_rec_cancel();                      // 兜底（挂死场景由下次 start 解卡）
-    if (s_rec_stack) {
-        heap_caps_free(s_rec_stack);
-        s_rec_stack = NULL;
-    }
 }
 
 // 遗留待传总量（索引 RAM 数据，无 flash 读）。
@@ -407,6 +366,13 @@ esp_err_t rec_mode_init(void)
         s_enc = NULL;
         ESP_LOGE(TAG, "开机分配编码输出缓冲失败（%dB）", s_opus_cap);
         return ESP_ERR_NO_MEM;
+    }
+    // 常驻录音任务（.bss 专栈）：开机即建、停车场待命（-O2 预算内，见
+    // s_rec_stack 注释）。会话开始只置 s_run 放行。
+    if (!xTaskCreateStatic(rec_task, "rec_task", REC_STACK_BYTES, NULL, 5,
+                           s_rec_stack, &s_rec_tcb)) {
+        ESP_LOGE(TAG, "常驻录音任务创建失败（理论不可达）");
+        return ESP_FAIL;
     }
     ESP_LOGI(TAG, "Opus 编码器开机就绪（状态 ~25KB 永久持有；余堆 %u B）",
              (unsigned)esp_get_free_heap_size());
