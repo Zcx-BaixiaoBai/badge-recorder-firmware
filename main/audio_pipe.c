@@ -18,9 +18,11 @@
 
 static const char *TAG = "audio_pipe";
 
-// 8KB ≈ 170ms 音频余量（24k/16bit 单声道 48KB/s）。录音任务每 60ms 消费一帧，
-// 优先级 5 高于上传任务 4，WiFi 突发期间仍持续消费不积压。
-#define REC_SB_BYTES   (8 * 1024)
+// 6KB ≈ 128ms 音频余量（24k/16bit 单声道 48KB/s）。录音任务每 10ms 消费一帧，
+// 优先级 5。frec 写满扇区先擦后写（4KB 扇区擦除典型 <90ms）——128ms 余量
+// 覆盖。v0.4.42：8→6KB——16KB 常驻编码栈落地后空闲堆太瘦（wifi:mem fail），
+// 这 2KB 让空闲水位回到实测可用的 ~10.4KB+。
+#define REC_SB_BYTES   (6 * 1024)
 #define REC_CHUNK      2048          // 采集块 64ms
 #define REC_WARMUP     2             // 丢弃前 2 块（提示音尾 + DMA 陈旧数据）
 
