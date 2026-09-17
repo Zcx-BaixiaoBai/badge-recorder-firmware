@@ -325,8 +325,9 @@ static void back_to_main(void)
 
 // ---------- 会话制录音（v0.4.27）：启动入口 + 收尾 UI ----------
 
-// 进入一节录音（worker 上下文）。有网先校时（无网也允许录，段头 start_ts=0
-// 由服务端兜底）。成功：屏幕熄灭，会话任务接管，worker 走阶段守卫。
+// 进入一节录音（worker 上下文，阻塞 ~1s）。有网先校时（无网也允许录，段头
+// start_ts=0 由服务端兜底）。成功：phase=RECORDING，worker 下轮转段时熄屏，
+// 后续由 rec_mode_poll / rec_mode_finish_session 驱动。
 static bool start_rec_session(rec_start_mode_t mode)
 {
     if (wifi_is_connected()) time_sync_from_gateway(g_cfg.gw_url);
@@ -454,10 +455,14 @@ static void badge_worker(void *arg)
     rec_phase_t prev_ph = REC_PHASE_IDLE;
     static bool s_finishing;                 // finish 重入保护（worker 单任务本无，防御）
     for (;;) {
-        // 会话阶段监视：IDLE 之外 250ms 快轮询（收尾 UI 及时刷）。
-        // SYNC 且会话任务已退 → 本 worker 驱动收尾（同步排空 + 续录判定；
-        // v0.4.29：会话任务录完即退腾出 4KB 栈，同步期堆 ~8KB 上传才正常）。
+        // 会话阶段监视（v0.4.30 worker 驱动）：IDLE 之外 250ms 快轮询。
+        // 录音收尾 → poll 内部转 SYNC；SYNC → 本 worker 驱动收尾（同步排空 +
+        // 续录判定；录音期 WiFi 已 deinit，同步期堆 ~8KB 是实测上传水位）。
+        rec_mode_poll();
         rec_phase_t ph = rec_mode_phase();
+        if (ph == REC_PHASE_RECORDING && prev_ph == REC_PHASE_IDLE) {
+            rec_mode_screen_off();           // 屏幕归 worker 单任务拥有（LVGL 锁内）
+        }
         if (ph == REC_PHASE_SYNC && !s_finishing) {
             s_finishing = true;
             rec_mode_finish_session();       // 阻塞至排空/超时；续录则内部起新节

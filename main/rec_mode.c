@@ -32,13 +32,13 @@
 
 #include "esp_lcd_panel_io.h"
 #include "esp_lcd_panel_ops.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_lvgl_port.h"
 #include "esp_opus_enc.h"
 #include "esp_system.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
-#include "freertos/semphr.h"
 #include "freertos/task.h"
 
 #include <stdio.h>
@@ -75,11 +75,11 @@ static const int16_t s_fir[28] = {
 // ---- 状态 ----
 static volatile rec_phase_t s_phase = REC_PHASE_IDLE;
 static volatile bool s_run;         // rec_task 循环许可
+static volatile bool s_rec_done;    // rec_task 已收尾（worker 轮询转段用）
+static volatile bool s_audio_ready; // 采集已就绪（rec_task 起跑门槛）
 static volatile bool s_stop_req;    // 用户请求结束（含同步期：本节后不续录）
 static rec_start_mode_t s_mode = REC_MODE_MANUAL;
 static bool s_last_had_err;         // 上一节录音期是否出错（续录判定用）
-static TaskHandle_t s_session;      // 会话宿主任务
-static SemaphoreHandle_t s_done;    // rec_task 收尾信号
 static char s_err[96];
 static void *s_enc;
 static uint8_t *s_opus_buf;         // 编码输出缓冲
@@ -95,21 +95,30 @@ static uint32_t s_seg_frames;       // 当前段已编码帧数
 static uint32_t s_sess_frames;      // 本节累计帧数（30 分钟上限）
 
 // ---- 屏幕时序 ----
+// ★ v0.4.30：LVGL API 必须持锁调用（ui_badge 全部走 bsp_lvgl_lock，v0.4.29
+//   的 rec_mode 无锁跨任务调 lvgl_port_stop → Load access fault 真机崩溃）。
+//   本函数由 worker 在 phase 转 RECORDING 时调用（单一任务拥有屏幕）。
 
-static void screen_off(void)
+void rec_mode_screen_off(void)
 {
+    bsp_lvgl_lock(2000);
     bsp_display_backlight(0);
     esp_lcd_panel_disp_on_off(bsp_display_panel(), false);
     esp_lcd_panel_io_tx_param(bsp_display_io(), ST7789_SLPIN, NULL, 0);
     lvgl_port_stop();               // 挂起 LVGL timer（esp_lvgl_port 2.9 公开 API）
+    bsp_lvgl_unlock();
 }
 
 static void screen_on(void)
 {
+    bsp_lvgl_lock(2000);
     esp_lcd_panel_io_tx_param(bsp_display_io(), ST7789_SLPOUT, NULL, 0);
+    bsp_lvgl_unlock();
     vTaskDelay(pdMS_TO_TICKS(120)); // ST7789 规格：SLPOUT 后须等 120ms 再 DISPON
+    bsp_lvgl_lock(2000);
     esp_lcd_panel_disp_on_off(bsp_display_panel(), true);
     lvgl_port_resume();
+    bsp_lvgl_unlock();
     bsp_display_backlight(100);
 }
 
@@ -157,6 +166,10 @@ static void rec_task(void *arg)
     (void)arg;
     s_seg_frames = 0;
     s_sess_frames = 0;
+    while (!s_audio_ready) {        // 起跑门槛：先建本任务（16KB 大块优先分配），
+        if (!s_run) { s_rec_done = true; vTaskDelete(NULL); }  // 后起采集再放行
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
     for (;;) {
         if (!s_run) break;          // 正常停止：排空后退出
         size_t got = 0;
@@ -222,48 +235,56 @@ static void rec_task(void *arg)
     }
     // 编码器与输出缓冲永久持有（开机分配防碎片化），会话结束只 reset
     esp_opus_enc_reset(s_enc);
-    xSemaphoreGive(s_done);
+    s_rec_done = true;              // worker 轮询发现后转 SYNC
     vTaskDelete(NULL);
 }
 
-// ---- 会话宿主任务（录音 → 同步 → 续录判定） ----
+// ---- 会话编排（v0.4.30：无独立会话任务，worker 轮询驱动）----
+// v0.4.29 教训：会话任务本身吃 4KB 且其创建也撞碎片堆；16KB rec 栈在
+// 33.7KB 碎片堆上分配失败。改由 worker 调 rec_mode_start / rec_mode_poll /
+// rec_mode_finish_session 三个非重入入口推进状态机（worker 单任务天然互斥），
+// 录音期堆多 4KB、少一个碎片源。
 
-// 本节启动（会话任务上下文）。失败时 s_err 已填，调用方据此退出。
+// 本节启动（rec_mode_start 内部，worker 或 console 上下文）。失败时 s_err 已填。
 static esp_err_t start_capture(void)
 {
-    ESP_LOGI(TAG, "一节开始（%s，空闲堆 %u B）",
+    ESP_LOGI(TAG, "一节开始（%s，空闲堆 %u B，最大连续块 %u B）",
              s_mode == REC_MODE_AUTO ? "续录" : "手动",
-             (unsigned)esp_get_free_heap_size());
-
-    // ★ 会话制核心：录音前彻底卸载 WiFi 驱动，堆（~34KB）还给录音流水线
-    wifi_sta_deinit();
+             (unsigned)esp_get_free_heap_size(),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
 
     esp_opus_enc_reset(s_enc);               // 复用编码器：状态清零
     resample_reset();
     s_staged = 0;
+    s_rec_done = false;
+    s_audio_ready = false;
 
     if (frec_seg_begin(time_now_ms(), NULL) != ESP_OK) {
         snprintf(s_err, sizeof(s_err), "段创建失败（分区满？先同步）");
         return ESP_FAIL;
     }
+
+    s_run = true;
+    // ★ 16KB 大块优先分配（first-fit 堆：小任务先建会把最大洞啃掉一角）。
+    //   libopus 编码实测栈深 ~14KB（v0.4.28 真机 Stack protection fault）。
+    //   rec_task 起跑前等 s_audio_ready 门槛。
+    if (xTaskCreate(rec_task, "rec_task", 16384, NULL, 5, NULL) != pdPASS) {
+        s_run = false;
+        frec_seg_end();
+        snprintf(s_err, sizeof(s_err), "录音任务创建失败（堆碎片？）");
+        return ESP_ERR_NO_MEM;
+    }
+
     if (audio_rec_start() != ESP_OK) {
+        s_run = false;                       // rec_task 过门槛即自退
+        for (int i = 0; i < 20 && !s_rec_done; i++) vTaskDelay(pdMS_TO_TICKS(50));
         frec_seg_end();
         snprintf(s_err, sizeof(s_err), "采集启动失败");
         return ESP_FAIL;
     }
+    s_audio_ready = true;                    // 放行 rec_task
 
-    s_run = true;
-    // 16KB：libopus 编码实测栈深 ~14KB（v0.4.28 真机 Guru Meditation：Stack
-    // protection fault，SP 越过 6KB 栈底再深 0x1FA0）。旧 6KB 从未真正跑过
-    // 帧处理——"rec_start OK"只是启动成功。
-    if (xTaskCreate(rec_task, "rec_task", 16384, NULL, 5, NULL) != pdPASS) {
-        s_run = false;
-        audio_rec_cancel();
-        frec_seg_end();
-        snprintf(s_err, sizeof(s_err), "录音任务创建失败");
-        return ESP_ERR_NO_MEM;
-    }
-    ESP_LOGI(TAG, "熄屏录音中（30 分钟上限，空闲堆 %u B）",
+    ESP_LOGI(TAG, "录音中（30 分钟上限，空闲堆 %u B）",
              (unsigned)esp_get_free_heap_size());
     return ESP_OK;
 }
@@ -287,28 +308,6 @@ static uint32_t pending_bytes(void)
         total += si.payload_size + si.frame_count * 2 + 64;
     }
     return total;
-}
-
-// 会话宿主：只负责录音节本身。录完即退出（★ v0.4.29：先释放自身 4KB 栈，
-// 同步窗口的堆预算才能到 ~8KB——实测 4.5KB 水位下 lwIP 发包异常、上传断流；
-// 8KB≈空闲态水位，上传正常）。同步+续录驱动由 worker 的
-// rec_mode_finish_session() 接手（观察 phase==SYNC 且无会话任务时调用）。
-static void session_task(void *arg)
-{
-    (void)arg;
-    s_phase = REC_PHASE_RECORDING;
-    esp_err_t st = start_capture();
-    if (st == ESP_OK) {
-        xSemaphoreTake(s_done, portMAX_DELAY);   // rec_task 收尾给出
-        s_last_had_err = (s_err[0] != '\0');
-    } else {
-        s_last_had_err = true;
-    }
-    stop_capture();
-    // 移交：phase=SYNC + 任务自删。worker 看到即驱动同步与续录判定。
-    s_phase = REC_PHASE_SYNC;
-    s_session = NULL;
-    vTaskDelete(NULL);
 }
 
 // ---- 对外 API ----
@@ -358,12 +357,13 @@ esp_err_t rec_mode_init(void)
         ESP_LOGE(TAG, "开机分配编码输出缓冲失败（%dB）", s_opus_cap);
         return ESP_ERR_NO_MEM;
     }
-    if (!s_done) s_done = xSemaphoreCreateBinary();
     ESP_LOGI(TAG, "Opus 编码器开机就绪（状态 ~25KB 永久持有；余堆 %u B）",
              (unsigned)esp_get_free_heap_size());
     return ESP_OK;
 }
 
+// 进入一节录音（worker 或 console 上下文，阻塞 ~1s）。成功后 phase=RECORDING，
+// worker 在转段时调 rec_mode_screen_off()；屏幕归 worker 单任务拥有。
 esp_err_t rec_mode_start(rec_start_mode_t mode)
 {
     if (s_phase != REC_PHASE_IDLE) return ESP_ERR_INVALID_STATE;   // 会话/同步进行中
@@ -387,20 +387,26 @@ esp_err_t rec_mode_start(rec_start_mode_t mode)
     s_mode = mode;
     s_stop_req = false;
     s_last_had_err = false;
-    s_phase = REC_PHASE_IDLE;                 // 宿主任务起跑后置 RECORDING
-    // ★ 顺序关键（v0.4.27 真机教训）：必须先卸载 WiFi 驱动（堆 +~34KB）再创建
-    //   会话任务——否则在 WiFi 常开的空闲堆（~10KB）上 4KB 任务栈分配失败，
-    //   "会话任务创建失败" 死循环。start_capture 里的 deinit 幂等兜底。
+    // ★ 顺序关键（v0.4.27 真机教训）：先卸载 WiFi 驱动（堆 +~29KB）再建
+    //   16KB rec_task——WiFi 常开的 ~10KB 空闲堆根本不够。
     wifi_sta_deinit();
-    // 4KB：本任务不做网络（HTTP 都在 upload 任务），只编排 + 等信号
-    if (xTaskCreate(session_task, "rec_sess", 4096, NULL, 4, &s_session) != pdPASS) {
-        s_session = NULL;
-        snprintf(s_err, sizeof(s_err), "会话任务创建失败");
+
+    if (start_capture() != ESP_OK) {
+        s_last_had_err = true;
         wifi_sta_resume();                    // 失败回滚：网络留给 UI
-        return ESP_ERR_NO_MEM;
+        return ESP_FAIL;
     }
-    screen_off();
+    s_phase = REC_PHASE_RECORDING;
     return ESP_OK;
+}
+
+// worker 轮询（250ms 一次）：录音收尾检测 → 转 SYNC。幂等，IDLE 时无操作。
+void rec_mode_poll(void)
+{
+    if (s_phase != REC_PHASE_RECORDING || !s_rec_done) return;
+    s_last_had_err = (s_err[0] != '\0');
+    stop_capture();
+    s_phase = REC_PHASE_SYNC;
 }
 
 esp_err_t rec_mode_stop(void)
