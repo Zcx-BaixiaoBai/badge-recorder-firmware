@@ -1,0 +1,9 @@
+# Name,   Type, SubType, Offset,   Size,     Flags
+nvs,      data, nvs,     0x9000,   0x6000,
+phy_init, data, phy,     0xf000,   0x1000,
+factory,  app,  factory, 0x10000,  0x300000,
+cardid,   data, nvs,     0x356000, 0x4000,
+# 熄屏录音的段存储（M1，design §4.3）：cardid 之后新增资源分区
+# （protected-flash-layout 允许，不得覆盖 cardid）。FAT16+wear levelling，
+# 首次挂载自动格式化。合并产物不含本分区数据 → 已写身份的设备仍可直刷整包。
+recordings, data, fat,     0x360000, 0x4a0000,
