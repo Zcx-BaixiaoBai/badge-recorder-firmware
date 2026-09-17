@@ -20,6 +20,7 @@
 #include "audio_pipe.h"
 #include "badge_cfg.h"
 #include "badge_console.h"
+#include "frec_store.h"
 #include "provision.h"
 #include "rec_mode.h"
 #include "rec_upload.h"
