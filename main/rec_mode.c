@@ -404,10 +404,15 @@ esp_err_t rec_mode_start(rec_start_mode_t mode)
     s_mode = mode;
     s_stop_req = false;
     s_phase = REC_PHASE_IDLE;                 // 宿主任务起跑后置 RECORDING
+    // ★ 顺序关键（v0.4.27 真机教训）：必须先卸载 WiFi 驱动（堆 +~34KB）再创建
+    //   会话任务——否则在 WiFi 常开的空闲堆（~10KB）上 4KB 任务栈分配失败，
+    //   "会话任务创建失败" 死循环。start_capture 里的 deinit 幂等兜底。
+    wifi_sta_deinit();
     // 4KB：本任务不做网络（HTTP 都在 upload 任务），只编排 + 等信号
     if (xTaskCreate(session_task, "rec_sess", 4096, NULL, 4, &s_session) != pdPASS) {
         s_session = NULL;
         snprintf(s_err, sizeof(s_err), "会话任务创建失败");
+        wifi_sta_resume();                    // 失败回滚：网络留给 UI
         return ESP_ERR_NO_MEM;
     }
     screen_off();
