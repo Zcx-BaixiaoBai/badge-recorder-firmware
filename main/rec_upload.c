@@ -30,12 +30,10 @@
 static const char *TAG = "recupload";
 
 #define MAX_BATCH     16            // 单轮最多处理的段数（>80 分钟积压，足够）
-// ★ v0.4.44：写块 1460→512。真机双端抓包铁证：POST 头（343B）能发、服务
-//   器已确认，第一个整 MSS（1460B）写永远滞留在驱动 TX 队列（无报错、无
-//   线上帧）。史上所有成功传输 ≤343B（84/142/343/48B），所有 ≥MSS 的写
-//   （含 v0.4.26 的 2048）全部卡死。512B 属于已验证可流出的尺寸类；
-//   Nagle 自节流下 ~20-40s/178KB 段（120s timeout 内）。
-#define READ_CHUNK    512
+// ★ v0.4.45：照抄 zcode 工牌已验证配方（同硬件 720KB 语音流上传畅通）：
+//   写块 2048 + rx 缓冲 4096 + LWIP 默认窗口（见 sdkconfig——v0.4.9 砍窗
+//   后大宗上传从未成功，是两固件的分水岭差异）。
+#define READ_CHUNK    2048
 
 static TaskHandle_t s_task;
 static char s_device_id[24];        // "badge-<12 hex>"
@@ -83,8 +81,8 @@ static esp_err_t upload_one(const frec_seg_info_t *seg)
     esp_http_client_config_t cfg = {
         .url = url,
         .method = HTTP_METHOD_POST,
-        .timeout_ms = 120000,       // 大段兜底（MSS 写正常 ~1-2s/段）
-        .buffer_size = 512,
+        .timeout_ms = 120000,       // 大段兜底（配方修复后 ~1-2s/段）
+        .buffer_size = 4096,        // zcode 配方
         .buffer_size_tx = READ_CHUNK,
         .disable_auto_redirect = true,
     };

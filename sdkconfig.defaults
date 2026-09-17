@@ -63,11 +63,13 @@ CONFIG_ESP_WIFI_RX_MGMT_BUF_NUM_DEF=2
 CONFIG_ESP_WIFI_AMPDU_TX_ENABLED=y
 CONFIG_ESP_WIFI_AMPDU_RX_ENABLED=y
 
-# --- LWIP RAM：给 Opus 编码器(~25KB 状态)腾堆。TCP 收发窗各 5744→3072
-# （LWIP sanity 要求 ≥2×MSS=2920；600KB 段上传吞吐仍可；单连接足够）
-CONFIG_LWIP_TCP_SND_BUF_DEFAULT=3072
-CONFIG_LWIP_TCP_WND_DEFAULT=3072
-CONFIG_LWIP_TCP_QUEUE_OOSEQ=n
+# --- LWIP：恢复默认窗口（v0.4.45）---
+# ★ v0.4.9 曾把 TCP_SND_BUF/WND 5744→3072 省 RAM（-Og 时代）。真机铁证：
+#   同款硬件的 zcode 工牌（默认 5744）720KB 语音流上传畅通；本固件自砍窗
+#   之日起大宗上传从未成功（写滞留驱动 TX 队列，双端抓包确认）。-O2 后
+#   预算已恢复，回抄已验证配方。QUEUE_OOSEQ 也回默认（y）。
+CONFIG_LWIP_TCP_SND_BUF_DEFAULT=5744
+CONFIG_LWIP_TCP_WND_DEFAULT=5744
 
 # --- ZCode 工牌凭据：发布构建一律置空，运行期经 SoftAP 配网写入 NVS ---
 # 开发机如需免配网调试，可临时在此填值（勿提交）或 idf.py menuconfig。
