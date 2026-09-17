@@ -50,18 +50,19 @@ static const char *TAG = "recmode";
 // ---- 参数 ----
 #define CAP_RATE        24000       // ES8311 ADC 时钟要求的采集率（勿改，见 audio_pipe.c）
 #define ENC_RATE        16000
-// ★ v0.4.31：帧长 60ms→20ms。原因：libopus 编码栈深随帧长缩（60ms 实测
-//   ~14KB，16KB 任务栈在 deinit 后的碎片堆上分配失败——最大连续块仅 14848B，
-//   空闲堆却有 38.3KB）；20ms 是 opus 标准帧长（嵌入式典型栈 4-6KB），FREC
-//   头自带 frame_ms，服务端解析按头部值，天然兼容。代价：帧头开销
-//   50 帧/s×2B=100B/s（码率 2KB/s 的 5%）。
-#define FRAME_MS        20
-#define SAMPLES_IN      (CAP_RATE * FRAME_MS / 1000)     // 480
-#define SAMPLES_OUT     (ENC_RATE * FRAME_MS / 1000)     // 320
-#define BYTES_IN        (SAMPLES_IN * 2)                 // 960
-#define BYTES_OUT       (SAMPLES_OUT * 2)                // 640
-#define FRAMES_PER_SEG  (300000 / FRAME_MS)              // 15000 = 5 分钟一段
-#define SESSION_FRAMES  (1800 * 1000 / FRAME_MS)         // 90000 = 30 分钟一节
+// ★ v0.4.35：帧长 20ms→10ms。栈深考古（真机符号化，ELF 已随 CI artifact）：
+//   60ms CELT ~14.2KB、20ms SILK 12.4→14.4KB+（随内容浮动）——此端口的
+//   opus 栈固有在 14-16KB 级，借还制洞上限 14848B 装不下。10ms 把帧相关
+//   局部数组再砍半（固定开销 ~4-5KB + 缩放项 ≈8-9KB），稳进 14.3KB 借栈。
+//   代价：帧头 100 帧/s×2B=200B/s（码率 2KB/s 的 10%）。FREC 头自带
+//   frame_ms，服务端按头部解析，天然兼容。
+#define FRAME_MS        10
+#define SAMPLES_IN      (CAP_RATE * FRAME_MS / 1000)     // 240
+#define SAMPLES_OUT     (ENC_RATE * FRAME_MS / 1000)     // 160
+#define BYTES_IN        (SAMPLES_IN * 2)                 // 480
+#define BYTES_OUT       (SAMPLES_OUT * 2)                // 320
+#define FRAMES_PER_SEG  (300000 / FRAME_MS)              // 30000 = 5 分钟一段
+#define SESSION_FRAMES  (1800 * 1000 / FRAME_MS)         // 180000 = 30 分钟一节
 #define ST7789_SLPIN    0x10
 #define ST7789_SLPOUT   0x11
 #define SYNC_IP_WAIT_SEC  20                              // 同步窗口等 IP
@@ -269,6 +270,7 @@ static esp_err_t start_capture(void)
              s_mode == REC_MODE_AUTO ? "续录" : "手动",
              (unsigned)esp_get_free_heap_size(),
              (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+    heap_caps_dump(MALLOC_CAP_INTERNAL);     // 诊断：全部空闲块布局（洞被谁围着）
 
     esp_opus_enc_reset(s_enc);               // 复用编码器：状态清零
     resample_reset();
@@ -364,14 +366,11 @@ esp_err_t rec_mode_init(void)
         .channel          = 1,
         .bits_per_sample  = 16,
         .bitrate          = 16000,
-        .frame_duration   = ESP_OPUS_ENC_FRAME_DURATION_20_MS,
-        // ★ v0.4.34：VOIP(SILK)→AUDIO(CELT)。真机符号化：SILK 的 LPC 链
-        //（silk_find_LPC_FIX→silk_burg_modified_c）在真实语音下栈深 >14.3KB
-        //（且随内容浮动：12.4→14.4KB），借还制栈洞上限 14848B 装不下。
-        // CELT 栈随帧长缩（60ms 实测 14.2KB → 20ms 预计 ~6-8KB）。质量：
-        // 16kbps CELT 语音偏糊但对 ASR（MiniMax，宽条件训练）足够；
-        // 本产品输出只喂 ASR，不给人耳听。SILK@10ms 是未来的栈优化方向。
-        .application_mode = ESP_OPUS_ENC_APPLICATION_AUDIO,
+        .frame_duration   = ESP_OPUS_ENC_FRAME_DURATION_10_MS,
+        // ★ v0.4.35 回 VOIP/SILK：10ms 帧栈深预算 ~8-9KB（见 FRAME_MS 注释），
+        //   16kbps SILK 是语音质量正解；此前 CELT(AUDIO) 只是 20ms 时代的
+        //   栈逃生门。
+        .application_mode = ESP_OPUS_ENC_APPLICATION_VOIP,
         .complexity       = 0,
         .enable_fec       = false,
         .enable_dtx       = false,
