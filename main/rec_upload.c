@@ -30,11 +30,12 @@
 static const char *TAG = "recupload";
 
 #define MAX_BATCH     16            // 单轮最多处理的段数（>80 分钟积压，足够）
-// ★ 必须整 MSS（>1440B）：lwIP 默认 Nagle + 服务端延迟 ACK——1KB 小块写
-//   每块等一次 RTT，178KB 段要 60s+（真机实测撞 timeout）。1460 = 整段
-//   直发，Nagle 不触发。v0.4.26 的 2048 本来是对的，v0.4.27 降到 1KB
-//   时引入此回归。
-#define READ_CHUNK    1460
+// ★ v0.4.44：写块 1460→512。真机双端抓包铁证：POST 头（343B）能发、服务
+//   器已确认，第一个整 MSS（1460B）写永远滞留在驱动 TX 队列（无报错、无
+//   线上帧）。史上所有成功传输 ≤343B（84/142/343/48B），所有 ≥MSS 的写
+//   （含 v0.4.26 的 2048）全部卡死。512B 属于已验证可流出的尺寸类；
+//   Nagle 自节流下 ~20-40s/178KB 段（120s timeout 内）。
+#define READ_CHUNK    512
 
 static TaskHandle_t s_task;
 static char s_device_id[24];        // "badge-<12 hex>"
