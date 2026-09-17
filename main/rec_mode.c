@@ -365,7 +365,13 @@ esp_err_t rec_mode_init(void)
         .bits_per_sample  = 16,
         .bitrate          = 16000,
         .frame_duration   = ESP_OPUS_ENC_FRAME_DURATION_20_MS,
-        .application_mode = ESP_OPUS_ENC_APPLICATION_VOIP,
+        // ★ v0.4.34：VOIP(SILK)→AUDIO(CELT)。真机符号化：SILK 的 LPC 链
+        //（silk_find_LPC_FIX→silk_burg_modified_c）在真实语音下栈深 >14.3KB
+        //（且随内容浮动：12.4→14.4KB），借还制栈洞上限 14848B 装不下。
+        // CELT 栈随帧长缩（60ms 实测 14.2KB → 20ms 预计 ~6-8KB）。质量：
+        // 16kbps CELT 语音偏糊但对 ASR（MiniMax，宽条件训练）足够；
+        // 本产品输出只喂 ASR，不给人耳听。SILK@10ms 是未来的栈优化方向。
+        .application_mode = ESP_OPUS_ENC_APPLICATION_AUDIO,
         .complexity       = 0,
         .enable_fec       = false,
         .enable_dtx       = false,
