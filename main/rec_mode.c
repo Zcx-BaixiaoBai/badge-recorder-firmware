@@ -288,7 +288,8 @@ esp_err_t rec_mode_start(void)
 
     s_active = true;
     s_run = true;
-    if (xTaskCreate(rec_task, "rec_task", 4096, NULL, 5, NULL) != pdPASS) {
+    // 6KB：实测 4KB 时 FIR+opus_encode 内部栈溢出（Stack protection fault），8KB 挤 RAM
+    if (xTaskCreate(rec_task, "rec_task", 6144, NULL, 5, NULL) != pdPASS) {
         s_active = false;
         s_run = false;
         audio_rec_cancel();
