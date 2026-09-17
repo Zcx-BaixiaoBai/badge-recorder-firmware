@@ -75,6 +75,12 @@ static int cmd_rec_status(int argc, char **argv)
 static int cmd_sync(int argc, char **argv)
 {
     (void)argc; (void)argv;
+    if (rec_mode_active()) {
+        // 会话进行中：录音期 WiFi 已 deinit，此时强行连网会撞 RAM 预算
+        printf("sync: 会话进行中（phase=%d），等会话结束由内部流程同步\n",
+               (int)rec_mode_phase());
+        return 0;
+    }
     printf("sync_and_flush: %s（剩 %d 段）\n",
            rec_mode_sync_and_flush() ? "排空成功" : "未排空",
            rec_upload_pending());

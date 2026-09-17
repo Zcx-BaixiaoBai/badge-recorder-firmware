@@ -40,6 +40,11 @@ esp_err_t rec_mode_start(rec_start_mode_t mode);
 // 不再续录。真正的收尾/亮屏由会话任务完成后 worker 监视 phase 刷新。
 esp_err_t rec_mode_stop(void);
 
+// 会话收尾驱动（v0.4.29：worker 上下文，观察到 phase==SYNC 且会话任务已退出
+// 时调用一次）：同步排空 → 续录判定 → 续录成功内部起新节（仍熄屏），否则
+// 亮屏/恢复网络/回 IDLE。网络 HTTP 仍都在 upload 任务里。
+void rec_mode_finish_session(void);
+
 bool rec_mode_active(void);            // 会话进行中（录音或同步，任一）
 rec_phase_t rec_mode_phase(void);      // 当前阶段
 rec_start_mode_t rec_mode_cur_mode(void);

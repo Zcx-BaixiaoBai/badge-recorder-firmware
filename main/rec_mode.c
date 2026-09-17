@@ -77,6 +77,7 @@ static volatile rec_phase_t s_phase = REC_PHASE_IDLE;
 static volatile bool s_run;         // rec_task 循环许可
 static volatile bool s_stop_req;    // 用户请求结束（含同步期：本节后不续录）
 static rec_start_mode_t s_mode = REC_MODE_MANUAL;
+static bool s_last_had_err;         // 上一节录音期是否出错（续录判定用）
 static TaskHandle_t s_session;      // 会话宿主任务
 static SemaphoreHandle_t s_done;    // rec_task 收尾信号
 static char s_err[96];
@@ -252,8 +253,10 @@ static esp_err_t start_capture(void)
     }
 
     s_run = true;
-    // 6KB：实测 4KB 时 FIR+opus_encode 内部栈溢出（Stack protection fault）
-    if (xTaskCreate(rec_task, "rec_task", 6144, NULL, 5, NULL) != pdPASS) {
+    // 16KB：libopus 编码实测栈深 ~14KB（v0.4.28 真机 Guru Meditation：Stack
+    // protection fault，SP 越过 6KB 栈底再深 0x1FA0）。旧 6KB 从未真正跑过
+    // 帧处理——"rec_start OK"只是启动成功。
+    if (xTaskCreate(rec_task, "rec_task", 16384, NULL, 5, NULL) != pdPASS) {
         s_run = false;
         audio_rec_cancel();
         frec_seg_end();
@@ -286,44 +289,24 @@ static uint32_t pending_bytes(void)
     return total;
 }
 
-// 会话宿主：完整状态机。worker 只看 rec_mode_phase() 刷 UI。
+// 会话宿主：只负责录音节本身。录完即退出（★ v0.4.29：先释放自身 4KB 栈，
+// 同步窗口的堆预算才能到 ~8KB——实测 4.5KB 水位下 lwIP 发包异常、上传断流；
+// 8KB≈空闲态水位，上传正常）。同步+续录驱动由 worker 的
+// rec_mode_finish_session() 接手（观察 phase==SYNC 且无会话任务时调用）。
 static void session_task(void *arg)
 {
     (void)arg;
-    for (;;) {
-        // —— 阶段 1：录音（≤30 分钟） ——
-        s_phase = REC_PHASE_RECORDING;
-        esp_err_t st = start_capture();
-        bool had_err = false;
-        if (st == ESP_OK) {
-            xSemaphoreTake(s_done, portMAX_DELAY);   // rec_task 收尾给出
-            had_err = s_err[0] != '\0';
-        } else {
-            had_err = true;
-        }
-        stop_capture();
-
-        // —— 阶段 2：同步窗口（WiFi 重建 → 校时+排空，网络都在 upload 任务） ——
-        s_phase = REC_PHASE_SYNC;
-        bool drained = rec_mode_sync_and_flush();
-
-        // —— 续录判定：用户要求停 / 录音期出错 / 非续录模式 / 排空失败 → 结束 ——
-        if (s_stop_req || had_err || s_mode != REC_MODE_AUTO || !drained) {
-            if (s_mode == REC_MODE_AUTO && !s_stop_req && !had_err && !drained) {
-                ESP_LOGW(TAG, "排空失败：停续录（Flash 环保护，遗留 %d 段待补传）",
-                         frec_store_pending());
-            }
-            break;
-        }
-        ESP_LOGI(TAG, "续录：已排空，进入下一节");
+    s_phase = REC_PHASE_RECORDING;
+    esp_err_t st = start_capture();
+    if (st == ESP_OK) {
+        xSemaphoreTake(s_done, portMAX_DELAY);   // rec_task 收尾给出
+        s_last_had_err = (s_err[0] != '\0');
+    } else {
+        s_last_had_err = true;
     }
-
-    // 收尾：亮屏后广播 IDLE（worker 才能安全刷 UI）；网络留 UI 用。
-    if (!wifi_is_connected() && wifi_sta_configured()) {
-        wifi_sta_resume();                   // 启动失败路径：驱动被 deinit 过则内部重建
-    }
-    screen_on();
-    s_phase = REC_PHASE_IDLE;
+    stop_capture();
+    // 移交：phase=SYNC + 任务自删。worker 看到即驱动同步与续录判定。
+    s_phase = REC_PHASE_SYNC;
     s_session = NULL;
     vTaskDelete(NULL);
 }
@@ -383,7 +366,7 @@ esp_err_t rec_mode_init(void)
 
 esp_err_t rec_mode_start(rec_start_mode_t mode)
 {
-    if (s_session) return ESP_ERR_INVALID_STATE;
+    if (s_phase != REC_PHASE_IDLE) return ESP_ERR_INVALID_STATE;   // 会话/同步进行中
     s_err[0] = '\0';
     if (!s_enc || !s_opus_buf) {
         snprintf(s_err, sizeof(s_err), "Opus 编码器不可用（须开机预开）");
@@ -403,6 +386,7 @@ esp_err_t rec_mode_start(rec_start_mode_t mode)
 
     s_mode = mode;
     s_stop_req = false;
+    s_last_had_err = false;
     s_phase = REC_PHASE_IDLE;                 // 宿主任务起跑后置 RECORDING
     // ★ 顺序关键（v0.4.27 真机教训）：必须先卸载 WiFi 驱动（堆 +~34KB）再创建
     //   会话任务——否则在 WiFi 常开的空闲堆（~10KB）上 4KB 任务栈分配失败，
@@ -421,15 +405,38 @@ esp_err_t rec_mode_start(rec_start_mode_t mode)
 
 esp_err_t rec_mode_stop(void)
 {
-    if (!s_session) return ESP_OK;            // 无会话：幂等
+    if (s_phase == REC_PHASE_IDLE) return ESP_OK;   // 无会话：幂等
     s_stop_req = true;                        // 本节完成后不再续录
     if (s_phase == REC_PHASE_RECORDING) {
         s_run = false;                        // rec_task 排空后退出
         audio_rec_stop();                     // 采集排空 → read 返回 0 → 任务收尾
     }
     ESP_LOGI(TAG, "用户结束会话（%s）",
-             s_phase == REC_PHASE_SYNC ? "同步继续中" : "录音排空中");
+             s_phase == REC_PHASE_SYNC ? "同步后不续录" : "录音排空中");
     return ESP_OK;
+}
+
+// 会话收尾驱动（worker 上下文，观察 phase==SYNC 且无会话任务时调用一次）：
+// 同步排空 → 续录判定。续录成功则内部已起新节（phase 回 RECORDING，屏幕
+// 仍熄）；否则亮屏、恢复网络、回 IDLE（worker 随后刷收尾 UI）。
+void rec_mode_finish_session(void)
+{
+    bool drained = rec_mode_sync_and_flush();
+    bool cont = !s_stop_req && !s_last_had_err && s_mode == REC_MODE_AUTO && drained;
+    if (cont) {
+        ESP_LOGI(TAG, "续录：已排空，进入下一节");
+        s_phase = REC_PHASE_IDLE;             // 归位以通过 start 的会话重入守卫
+        if (rec_mode_start(s_mode) == ESP_OK) return;   // 起新节（内部置 RECORDING）
+        ESP_LOGW(TAG, "续录起新节失败，落到收尾");
+    } else if (s_mode == REC_MODE_AUTO && !s_stop_req && !s_last_had_err && !drained) {
+        ESP_LOGW(TAG, "排空失败：停续录（Flash 环保护，遗留 %d 段待补传）",
+                 frec_store_pending());
+    }
+    if (!wifi_is_connected() && wifi_sta_configured()) {
+        wifi_sta_resume();                   // 启动失败路径：驱动被 deinit 过则内部重建
+    }
+    screen_on();
+    s_phase = REC_PHASE_IDLE;
 }
 
 bool rec_mode_sync_and_flush(void)

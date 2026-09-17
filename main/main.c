@@ -452,10 +452,18 @@ static void badge_worker(void *arg)
 
     badge_ev_t ev;
     rec_phase_t prev_ph = REC_PHASE_IDLE;
+    static bool s_finishing;                 // finish 重入保护（worker 单任务本无，防御）
     for (;;) {
-        // 会话阶段监视：IDLE 之外 250ms 快轮询（收尾 UI 及时刷）；
-        // 会话刚结束时宿主任务已亮屏，这里按结果出文案。
+        // 会话阶段监视：IDLE 之外 250ms 快轮询（收尾 UI 及时刷）。
+        // SYNC 且会话任务已退 → 本 worker 驱动收尾（同步排空 + 续录判定；
+        // v0.4.29：会话任务录完即退腾出 4KB 栈，同步期堆 ~8KB 上传才正常）。
         rec_phase_t ph = rec_mode_phase();
+        if (ph == REC_PHASE_SYNC && !s_finishing) {
+            s_finishing = true;
+            rec_mode_finish_session();       // 阻塞至排空/超时；续录则内部起新节
+            s_finishing = false;
+            ph = rec_mode_phase();
+        }
         if (ph == REC_PHASE_IDLE && prev_ph != REC_PHASE_IDLE) session_end_ui();
         prev_ph = ph;
 
