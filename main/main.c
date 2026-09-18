@@ -1,4 +1,4 @@
-// main/main.c —— 工牌录音固件
+// main/main.c —— 秒忆卡 MemoSnap 固件（静默录音工牌）
 //
 // 产品：静默录音工牌（会话制 30 分钟/节 + 同步上传 + 服务器分析出纪要/日报）。
 // 主界面：录音仪表盘（状态/电量/待传段数）。
@@ -308,8 +308,8 @@ static void show_onboarding(void)
 {
     s_level = LVL_WS;
     s_onboarding = true;
-    ui_set_header("工牌录音");
-    ui_show_detail("欢迎使用");
+    ui_set_header("秒忆卡");
+    ui_show_detail("欢迎使用秒忆卡");
     ui_set_state("还未配置网络，请按引导操作");
     ui_set_answer(GUIDE_TEXT);
     ui_set_hint("长按OK进设置去配网");
@@ -432,7 +432,7 @@ static void settings_activate(int sel)
         s_level = LVL_SUBPAGE;
         ui_set_header("关于");
         ui_show_detail("关于");
-        ui_set_state("工牌录音固件 v0.4.49");
+        ui_set_state("秒忆卡 MemoSnap v0.4.55");
         ui_set_answer("会话制录音（30分钟一节）+ 同步上传 + 每日纪要。\n服务端：recorder-server\n（badge-recorder-firmware 仓库）。");
         ui_set_hint("长按OK返回设置");
         break;
@@ -449,7 +449,7 @@ static void badge_worker(void *arg)
         ui_set_busy("连接 WiFi…");
         if (!wifi_wait_connected(30)) {
             ui_set_busy(NULL);
-            ui_set_header("工牌录音");
+            ui_set_header("秒忆卡");
             ui_show_detail("WiFi 连不上");
             ui_set_error("检查 WiFi 名称/密码");
             ui_set_hint("长按OK进设置");
@@ -635,7 +635,7 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user)
 
 void app_main(void)
 {
-    ESP_LOGI(TAG, "工牌录音固件启动");
+    ESP_LOGI(TAG, "秒忆卡 MemoSnap 启动");
 
     esp_err_t nvs = nvs_flash_init();
     if (nvs == ESP_ERR_NVS_NO_FREE_PAGES || nvs == ESP_ERR_NVS_NEW_VERSION_FOUND) {

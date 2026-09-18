@@ -25,7 +25,7 @@ static const char *TAG = "provision";
 static const char *HTML_FORM =
     "<!doctype html><meta charset=utf-8>"
     "<meta name=viewport content='width=device-width,initial-scale=1'>"
-    "<title>工牌录音 配网</title>"
+    "<title>秒忆卡 MemoSnap 配网</title>"
     "<style>body{font-family:system-ui,sans-serif;background:#0f1419;color:#e6edf3;"
     "margin:0;padding:24px}h2{color:#2f81f7}h3{color:#4ade80;margin:20px 0 6px}"
     "label{display:block;margin:14px 0 4px;color:#8b98a5;font-size:14px}"
@@ -37,7 +37,7 @@ static const char *HTML_FORM =
     ".feat{color:#e6edf3;font-size:14px;line-height:1.8;margin:8px 0}"
     ".warn{color:#fbbf24;font-size:13px;margin:12px 0;padding:10px;"
     "border:1px solid #fbbf24;border-radius:6px;background:rgba(251,191,36,.08)}</style>"
-    "<h2>工牌录音 配网</h2>"
+    "<h2>秒忆卡 MemoSnap 配网</h2>"
     "<h3>这是什么？</h3>"
     "<div class=feat>这是一台<b>静默录音工牌</b>。佩戴后自动录下你一整天"
     "的对话和会议，音频自动上传到你的服务器进行分析：</div>"

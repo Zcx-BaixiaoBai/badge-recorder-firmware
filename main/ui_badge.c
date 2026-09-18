@@ -105,7 +105,7 @@ void ui_init(void)
     lv_obj_set_style_border_width(hdr, 2, 0);
     lv_obj_set_style_border_color(hdr, lv_color_hex(C_ACCENT), 0);
     lv_obj_set_style_border_side(hdr, LV_BORDER_SIDE_BOTTOM, 0);
-    s_hdr_title = mk_label(hdr, "工牌录音", C_TEXT);
+    s_hdr_title = mk_label(hdr, "秒忆卡 MemoSnap", C_TEXT);
     lv_label_set_long_mode(s_hdr_title, LV_LABEL_LONG_DOT);
     lv_obj_set_width(s_hdr_title, 140);
     lv_obj_align(s_hdr_title, LV_ALIGN_LEFT_MID, 12, 0);
