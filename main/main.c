@@ -1,14 +1,8 @@
-// main/main.c —— ZCode 工牌固件
+// main/main.c —— 工牌录音固件
 //
-// 三级界面与按键语义（用户需求原文实现）：
-//   L1 工作区列表：↑↓ 切换工作区（右侧显示 运行数/会话数 进度），OK 进入
-//   L2 会话列表：  ↑↓ 切换会话，OK 进入，长按 OK 退回 L1
-//   L3 会话详情：  OK 开始语音输入（再按 OK 结束并发送），↑↓ 滚动回复，
-//                  长按 OK 退回 L2（录音中长按=取消并退回）
-//
-// 数据链路：WiFi STA → 工牌网关(gateway.py) HTTP API → ZCode 云中继 → 桌面端会话。
-// 语音链路：PTT 录音(16k PCM) 流式上传 /ask → 网关 ASR→sendPrompt→等回复→TTS
-//           → 取回 /audio/<id> WAV 边下边播。
+// 产品：静默录音工牌（会话制 30 分钟/节 + 同步上传 + 服务器分析出纪要/日报）。
+// 主界面：录音仪表盘（状态/电量/待传段数）。
+// 设置菜单：配网（二次确认）/ 测试网关 / 录音（手动/连续）/ 配网指导 / 关于。
 #include "bsp_i2c.h"
 #include "bsp_display.h"
 #include "bsp_button.h"
@@ -80,7 +74,7 @@ static esp_err_t ptt_src(uint8_t *buf, size_t want, size_t *got, void *ctx)
         audio_rec_stop();                    // 采集任务收完当前块后退出，余量仍可排空
         if (s_ptt == 1) {
             s_ptt = 2;                       // 进入"等网关"阶段
-            ui_set_state("思考中… 等待 ZCode 回复");
+            ui_set_state("思考中… 等待回复");
         }
     }
     esp_err_t err = audio_rec_read(buf, want, got, 2500);
@@ -247,7 +241,7 @@ static void refresh_home(void)
     } else {
         ui_set_home("就绪", HOME_C_OK, soc, mv, pend);
     }
-    ui_set_hint("↑录音 ↓连续 OK设置");
+    ui_set_hint("长按上键单次录音 长按下键连续录音 长按OK设置");
     ui_set_battery(soc);
 }
 
@@ -284,30 +278,36 @@ static void enter_workspace(void)
 // ---------- 设置 / 首次引导 ----------
 
 static const char *GUIDE_TEXT =
-    "【服务端】recorder-server 跑在网关主机上：\n"
-    "github.com/Zcx-BaixiaoBai/badge-recorder-firmware\n"
-    "（README 有快速开始：pip install + serve）\n"
-    "【网关地址】= 部署 recorder-server 的主机 IP + 端口。\n"
-    "· 局域网：电脑 cmd 输 ipconfig，找 192.168.x.x / 10.x.x.x；\n"
-    "· 公网（推荐，外出也能传）：直接填服务器 IP；\n"
-    "· 例：http://10.0.0.5:8788（工牌与服务器网络可达）。\n"
-    "【令牌】recorder-server 配置文件里的 token。\n"
+    "【这是什么】静默录音工牌：佩戴后录下你一天的\n"
+    "对话和会议，自动上传服务器分析——每日生成会议\n"
+    "纪要、工作日报、说话人识别、全文搜索。\n"
+    "\n"
+    "【怎么用】\n"
+    "· 长按上键 = 单次录音（30 分钟一节）\n"
+    "· 长按下键 = 自动连续录音（每 30 分钟一节，\n"
+    "  同步后自动续录。注意：每节间有约 1 分钟\n"
+    "  同步间隔，期间不录音）\n"
+    "· 长按 OK = 结束录音 / 进设置\n"
+    "· 录音中短按任意键 = 亮屏看状态\n"
+    "\n"
     "【配网步骤】\n"
-    "1 长按 OK → 设置 → 配网设置。\n"
-    "2 手机连热点 Badge-Setup，浏览器开 http://192.168.4.1。\n"
-    "3 填 WiFi(2.4G)、网关地址、令牌，保存后工牌重启。\n"
-    "【录音】长按上键 = 30 分钟一节（录满同步后提示）；\n"
-    "长按下键 = 连续录音（每节同步后自动续录）；\n"
-    "长按 OK = 结束。同步后服务器每日出纪要与日报。\n"
+    "1 长按 OK → 设置 → 配网设置 → 长按 OK 确认。\n"
+    "2 手机连热点 Badge-Recorder-Setup，\n"
+    "  浏览器开 http://192.168.4.1。\n"
+    "3 填 WiFi(2.4G)、服务器地址、令牌，保存重启。\n"
+    "\n"
+    "【服务器】recorder-server（部署教程见仓库）：\n"
+    "github.com/Zcx-BaixiaoBai/badge-recorder-firmware\n"
+    "地址 = 服务器主机 IP + :8787。\n"
     "（本页可上下键滚动）";
 
 static void show_onboarding(void)
 {
     s_level = LVL_WS;
     s_onboarding = true;
-    ui_set_header("首次使用");
-    ui_show_detail("欢迎使用工牌录音");
-    ui_set_state("还未配置网络");
+    ui_set_header("工牌录音");
+    ui_show_detail("欢迎使用");
+    ui_set_state("还未配置网络，请按引导操作");
     ui_set_answer(GUIDE_TEXT);
     ui_set_hint("长按OK进设置去配网");
 }
