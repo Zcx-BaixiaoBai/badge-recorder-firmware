@@ -234,14 +234,17 @@ static void refresh_home(void)
     ui_show_home();
     if (ph == REC_PHASE_SYNC) {
         ui_set_home("同步中…", HOME_C_ACCENT, soc, mv, pend);
+        ui_set_hint("正在上传录音，请稍候…");
     } else if (ph == REC_PHASE_RECORDING) {
         ui_set_home("录音中", HOME_C_ACCENT, soc, mv, pend);
+        ui_set_hint("长按OK 结束录音");
     } else if (pend > 0) {
         ui_set_home("待传", HOME_C_WARN, soc, mv, pend);
+        ui_set_hint("连网后自动补传");
     } else {
         ui_set_home("就绪", HOME_C_OK, soc, mv, pend);
+        ui_set_hint("长按上键单次录音 长按下键连续录音 长按OK设置");
     }
-    ui_set_hint("长按上键单次录音 长按下键连续录音 长按OK设置");
     ui_set_battery(soc);
 }
 
