@@ -223,20 +223,21 @@ static void do_ask(void)
 
 // ---------- worker ----------
 
+// 主界面：录音仪表盘（不再拉工作区列表——录音产品不用远控工作区）
+static void refresh_home(void)
+{
+    s_level = LVL_WS;                   // 复用 LVL_WS 层级：上下滚动 + OK进设置
+    ui_set_busy(NULL);
+    ui_set_header("工牌录音");
+    ui_show_detail("录音待命");
+    ui_set_state(rec_upload_pending() > 0 ? "有待传段，连网后自动补传" : "就绪");
+    ui_set_hint("长按上下键录音 长按OK设置");
+    ui_set_battery(bsp_battery_soc());
+}
+
 static void refresh_lists(void)
 {
-    ui_set_busy("加载工作区…");
-    if (gw_fetch_workspaces(s_ws, GW_MAX_WS, &s_ws_n) != ESP_OK || s_ws_n == 0) {
-        ui_set_busy(NULL);
-        ui_set_header("工牌录音");
-        ui_show_detail("网关不可达");
-        ui_set_error("无法获取工作区列表");
-        ui_set_hint("长按OK进设置检查配网");
-        return;
-    }
-    s_level = LVL_WS;
-    build_ws_list();
-    ui_set_busy(NULL);
+    refresh_home();   // v0.4.49：录音产品不再拉工作区列表
 }
 
 static void enter_workspace(void)
@@ -413,7 +414,7 @@ static void settings_activate(int sel)
         s_level = LVL_SUBPAGE;
         ui_set_header("关于");
         ui_show_detail("关于");
-        ui_set_state("工牌录音固件 v0.4.27");
+        ui_set_state("工牌录音固件 v0.4.49");
         ui_set_answer("会话制录音（30分钟一节）+ 同步上传 + 每日纪要。\n服务端：recorder-server\n（badge-recorder-firmware 仓库）。");
         ui_set_hint("长按OK返回设置");
         break;
@@ -522,7 +523,7 @@ static void badge_worker(void *arg)
             } else if (s_level == LVL_SUBPAGE) {
                 break;                       // 子页只读，OK 无操作
             } else if (s_level == LVL_WS) {
-                if (!s_onboarding) enter_workspace();
+                if (!s_onboarding) build_settings(); // v0.4.49: 主界面 OK → 设置（不再进工作区）
             } else if (s_level == LVL_SESS) {
                 int sel = ui_list_sel();
                 if (sel >= 0 && sel < s_sess_n) {
