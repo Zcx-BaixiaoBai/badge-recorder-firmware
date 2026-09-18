@@ -58,6 +58,7 @@ static char s_cur_title[GW_SESS_TITLE];
 static int  s_ws_sel;                // 进入 L2 时记住的 L1 选中项（返回列表后 sel 会变）
 static badge_cfg_t g_cfg;            // 运行期配置（NVS 持久化，发布 bin 不内嵌凭据）
 static bool s_onboarding;            // 首次使用（无 WiFi 配置）引导态
+static bool s_provision_confirm;    // 配网确认子页（防误触直接覆盖配置）
 
 // PTT 状态机：0=空闲 1=录音中 2=已停止录音、等网关处理（此阶段按键不可打断）
 static volatile int  s_ptt;
@@ -367,12 +368,15 @@ static void session_end_ui(void)
 
 static void settings_activate(int sel)
 {
+    s_provision_confirm = false;             // 进任何设置项先清确认态
     switch (sel) {
-    case 0:   // 配网：置标志重启进 SoftAP 配网模式
-        cfg_set_provision_request(true);
-        ui_set_busy("进入配网模式…");
-        vTaskDelay(pdMS_TO_TICKS(300));
-        esp_restart();
+    case 0:   // 配网：先确认（v0.4.50：防误触直接覆盖配置）
+        s_level = LVL_SUBPAGE;
+        s_provision_confirm = true;
+        ui_set_header("配网确认");
+        ui_show_detail("配网将覆盖当前设置");
+        ui_set_state("长按OK确认进入配网");
+        ui_set_hint("短按OK取消  长按OK确认");
         break;
     case 1:   // 静音开关
         g_cfg.mute = !g_cfg.mute;
@@ -380,18 +384,14 @@ static void settings_activate(int sel)
         ui_set_mute(g_cfg.mute);
         build_settings();
         break;
-    case 2: { // 测试网关连接
+    case 2: { // 测试网关连接（v0.4.50：用 /health 测，recorder-server 无 /ui/workspaces）
         s_level = LVL_SUBPAGE;
         ui_set_header("测试网关");
         ui_show_detail("测试网关连接");
         ui_set_state("连接中…");
         ui_set_answer(g_cfg.gw_url[0] ? g_cfg.gw_url : "（未配置网关地址）");
-        gw_ws_t ws[GW_MAX_WS];
-        int n = 0;
-        if (gw_fetch_workspaces(ws, GW_MAX_WS, &n) == ESP_OK && n > 0) {
-            char b[96];
-            snprintf(b, sizeof(b), "网关可达，%d 个工作区", n);
-            ui_set_state(b);
+        if (time_sync_from_gateway(g_cfg.gw_url)) {
+            ui_set_state("网关可达，已校时");
         } else {
             ui_set_error("网关不可达，检查地址/令牌/WiFi");
         }
@@ -489,6 +489,8 @@ static void badge_worker(void *arg)
                         rec_upload_kick();
                     }
                 }
+                // v0.4.50：刷新仪表盘（待传段数从 >0 降到 0 时文字会过时）
+                if (s_level == LVL_WS) refresh_home();
             }
             continue;
         }
@@ -548,7 +550,16 @@ static void badge_worker(void *arg)
                 s_level = LVL_WS;
                 build_ws_list();
             } else if (s_level == LVL_SUBPAGE) {
-                build_settings();          // 子页返回设置菜单
+                if (s_provision_confirm) {
+                    // v0.4.50：长按OK确认配网——才真正进入
+                    s_provision_confirm = false;
+                    cfg_set_provision_request(true);
+                    ui_set_busy("进入配网模式…");
+                    vTaskDelay(pdMS_TO_TICKS(300));
+                    esp_restart();
+                } else {
+                    build_settings();          // 子页返回设置菜单
+                }
             } else if (s_level == LVL_SETTINGS) {
                 back_to_main();            // 设置返回主页
             } else {
