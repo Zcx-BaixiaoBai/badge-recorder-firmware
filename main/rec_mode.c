@@ -404,9 +404,12 @@ esp_err_t rec_mode_start(rec_start_mode_t mode)
     s_mode = mode;
     s_stop_req = false;
     s_last_had_err = false;
-    // ★ 顺序关键（v0.4.27 真机教训）：先卸载 WiFi 驱动（堆 +~29KB）再建
-    //   16KB rec_task——WiFi 常开的 ~10KB 空闲堆根本不够。
-    wifi_sta_deinit();
+    // ★ v0.4.46：无线电层关断（wifi_sta_stop），不再整体 deinit。原 deinit
+    //   是为借 16KB 栈腾堆——栈已 .bss 静态化（v0.4.37），deinit 只剩省电
+    //   一个理由；而真机实锤 deinit→reinit 循环会把驱动留在半死状态（deinit
+    //   前空闲心跳上传成功、reinit 后 TCP 连接永久静默失败——v0.4.45 R26/
+    //   R27 对照）。stop/start 占空比是 v0.4.26 验证过的路径。
+    wifi_sta_stop();
 
     if (start_capture() != ESP_OK) {
         s_last_had_err = true;
