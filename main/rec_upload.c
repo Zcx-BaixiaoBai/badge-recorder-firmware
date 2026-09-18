@@ -83,8 +83,11 @@ static esp_err_t upload_one(const frec_seg_info_t *seg)
         .url = url,
         .method = HTTP_METHOD_POST,
         .timeout_ms = 120000,       // 大段兜底（配方修复后 ~1-2s/段）
-        .buffer_size = 4096,        // zcode 配方
-        .buffer_size_tx = READ_CHUNK,
+        .buffer_size = 512,         // ★ rx 必须 512：v0.4.45 的 4096 在同步/
+                                    //   空闲堆（10KB 碎片、最大块 4.6KB）上
+                                    //   init 失败（v0.4.47 观测补盲实锤）——
+                                    //   timesync 能过正因为其客户端小。
+        .buffer_size_tx = READ_CHUNK,  // tx 2048：zcode 工牌验证过的写块
         .disable_auto_redirect = true,
     };
     esp_http_client_handle_t c = esp_http_client_init(&cfg);
