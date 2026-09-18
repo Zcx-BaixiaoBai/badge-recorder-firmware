@@ -224,16 +224,31 @@ static void do_ask(void)
 
 // ---------- worker ----------
 
-// 主界面：录音仪表盘（不再拉工作区列表——录音产品不用远控工作区）
+// 主界面：录音仪表盘（v0.4.51：无回复框——纯录音产品）
+// 颜色值对齐 ui_badge.c 调色板
+#define HOME_C_OK     0x4ADE80
+#define HOME_C_WARN   0xFBBF24
+#define HOME_C_ACCENT 0x2F81F7
+
 static void refresh_home(void)
 {
     s_level = LVL_WS;                   // 复用 LVL_WS 层级：上下滚动 + OK进设置
-    ui_set_busy(NULL);
-    ui_set_header("工牌录音");
-    ui_show_detail("录音待命");
-    ui_set_state(rec_upload_pending() > 0 ? "有待传段，连网后自动补传" : "就绪");
-    ui_set_hint("长按上下键录音 长按OK设置");
-    ui_set_battery(bsp_battery_soc());
+    int pend = rec_upload_pending();
+    int soc = bsp_battery_soc();
+    int mv = bsp_battery_mv();
+    rec_phase_t ph = rec_mode_phase();
+    ui_show_home();
+    if (ph == REC_PHASE_SYNC) {
+        ui_set_home("同步中…", HOME_C_ACCENT, soc, mv, pend);
+    } else if (ph == REC_PHASE_RECORDING) {
+        ui_set_home("录音中", HOME_C_ACCENT, soc, mv, pend);
+    } else if (pend > 0) {
+        ui_set_home("待传", HOME_C_WARN, soc, mv, pend);
+    } else {
+        ui_set_home("就绪", HOME_C_OK, soc, mv, pend);
+    }
+    ui_set_hint("↑录音 ↓连续 OK设置");
+    ui_set_battery(soc);
 }
 
 static void refresh_lists(void)

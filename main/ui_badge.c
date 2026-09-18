@@ -48,6 +48,10 @@ static int s_row_n, s_sel;
 // 详情态
 static lv_obj_t *s_state_lbl, *s_ans_cont, *s_ans_lbl;
 
+// 仪表盘态（v0.4.51：录音产品首页，无回复框）
+static lv_obj_t *s_home_status;
+static lv_obj_t *s_home_info;
+
 static void lock(void)   { bsp_lvgl_lock(2000); }
 static void unlock(void) { bsp_lvgl_unlock(); }
 
@@ -303,6 +307,49 @@ void ui_list_move(int delta)
 
 int ui_list_sel(void)   { return s_sel; }
 int ui_list_count(void) { return s_row_n; }
+
+// ---------- 录音仪表盘（v0.4.51：录音产品首页，无回复框）----------
+
+void ui_show_home(void)
+{
+    lock();
+    body_create(false);
+    lv_obj_set_style_pad_row(s_body, 16, 0);
+
+    // 大状态（居中、醒目色）
+    s_home_status = mk_label(s_body, "就绪", C_OK);
+    lv_obj_set_style_text_align(s_home_status, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_width(s_home_status, 220);
+
+    // 信息卡（圆角深色）
+    lv_obj_t *card = lv_obj_create(s_body);
+    flat(card, C_CARD, 8);
+    lv_obj_set_width(card, 220);
+    lv_obj_set_height(card, LV_SIZE_CONTENT);
+    lv_obj_set_style_pad_all(card, 12, 0);
+
+    s_home_info = mk_label(card, "", C_TEXT);
+    lv_label_set_long_mode(s_home_info, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(s_home_info, 196);
+
+    s_state_lbl = s_ans_cont = s_ans_lbl = NULL;   // 详情态控件作废
+    unlock();
+}
+
+void ui_set_home(const char *status, int color, int soc, int mv, int pending)
+{
+    lock();
+    if (s_home_status) {
+        lv_label_set_text(s_home_status, status);
+        lv_obj_set_style_text_color(s_home_status, lv_color_hex((uint32_t)color), 0);
+    }
+    if (s_home_info) {
+        static char info[96];
+        snprintf(info, sizeof(info), "电量 %d%% (%dmV)\n待传 %d 段", soc, mv, pending);
+        lv_label_set_text(s_home_info, info);
+    }
+    unlock();
+}
 
 // ---------- 详情页 ----------
 

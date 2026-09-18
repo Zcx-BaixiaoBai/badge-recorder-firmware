@@ -30,3 +30,7 @@ void ui_set_state(const char *state_text); // 中部状态行（聆听中/思考
 void ui_set_answer(const char *text);      // 回复正文（可滚动）
 void ui_scroll_answer(int delta_pixels);
 void ui_set_error(const char *msg);        // 状态行变红显示错误
+
+// 录音仪表盘（v0.4.51：录音产品首页——大状态+信息卡，无回复框）
+void ui_show_home(void);
+void ui_set_home(const char *status, int color, int soc, int mv, int pending);
