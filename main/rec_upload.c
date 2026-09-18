@@ -18,6 +18,7 @@
 #include "time_sync.h"
 #include "wifi_sta.h"
 
+#include "esp_heap_caps.h"
 #include "esp_http_client.h"
 #include "esp_log.h"
 #include "esp_mac.h"
@@ -87,7 +88,14 @@ static esp_err_t upload_one(const frec_seg_info_t *seg)
         .disable_auto_redirect = true,
     };
     esp_http_client_handle_t c = esp_http_client_init(&cfg);
-    if (!c) return ESP_FAIL;
+    if (!c) {
+        // v0.4.47：此前此处静默失败（init 的 4KB rx 缓冲可能撞碎片堆），
+        // 同步窗口里表现为"本轮上传 0 段"刷屏而无任何错误线索
+        ESP_LOGW(TAG, "%s client init 失败（堆碎片？空闲 %u B，最大块 %u B）",
+                 seg_id, (unsigned)esp_get_free_heap_size(),
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+        return ESP_FAIL;
+    }
     esp_http_client_set_header(c, "Content-Type", "application/octet-stream");
     esp_http_client_set_header(c, "X-Gateway-Token", gw_client_token());
     esp_http_client_set_header(c, "X-Device-Id", s_device_id);
@@ -98,7 +106,13 @@ static esp_err_t upload_one(const frec_seg_info_t *seg)
     esp_http_client_set_header(c, "X-Bitrate", br);
 
     esp_err_t ret = ESP_FAIL;
-    if (esp_http_client_open(c, (int)total) == ESP_OK) {
+    esp_err_t oerr = esp_http_client_open(c, (int)total);
+    if (oerr != ESP_OK) {
+        // v0.4.47：open 失败此前静默（返回 FAIL 无日志）——真机同步窗口
+        // 连接失败拿不到错误码全靠猜，补上
+        ESP_LOGW(TAG, "%s open 失败: %s", seg_id, esp_err_to_name(oerr));
+    }
+    if (oerr == ESP_OK) {
         bool aborted = false;
         uint32_t off = 0;
         while (off < total) {
@@ -177,8 +191,13 @@ static void upload_task(void *arg)
             time_sync_from_gateway(gw_client_base());
         }
         int sent = flush_pending();
-        if (sent > 0 || frec_store_pending() > 0) {
-            ESP_LOGI(TAG, "本轮上传 %d 段（剩 %d 待传）", sent, frec_store_pending());
+        // v0.4.47：改"变化时才记"——同步窗口 2s 一轮的失败刷屏曾淹没真错误
+        static int s_last_sent, s_last_left;
+        int left = frec_store_pending();
+        if (sent != s_last_sent || left != s_last_left) {
+            s_last_sent = sent;
+            s_last_left = left;
+            ESP_LOGI(TAG, "本轮上传 %d 段（剩 %d 待传）", sent, left);
         }
     }
 }
