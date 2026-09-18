@@ -66,6 +66,9 @@ void rec_mode_finish_session(void);
 // 熄屏（持 bsp_lvgl_lock；worker 在 phase IDLE→RECORDING 转换时调用）。
 void rec_mode_screen_off(void);
 
+// 唤醒屏幕（持 bsp_lvgl_lock；录音中任意按键触发，10 秒无操作后由 worker 熄回）。
+void rec_mode_screen_wake(void);
+
 // 同步流程（worker 的 finish 内部调用；控制台手动触发需会话空闲）：WiFi
 // re-init → 校时（upload 任务内）→ 上传排空。返回 true=排空成功。失败段留
 // 本机，由闲时心跳补传；调用方据此决定是否续录（不清空不续录）。

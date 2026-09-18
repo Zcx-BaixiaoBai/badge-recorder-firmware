@@ -126,7 +126,7 @@ void rec_mode_screen_off(void)
     bsp_lvgl_unlock();
 }
 
-static void screen_on(void)
+void rec_mode_screen_wake(void)
 {
     bsp_lvgl_lock(2000);
     esp_lcd_panel_io_tx_param(bsp_display_io(), ST7789_SLPOUT, NULL, 0);
@@ -461,7 +461,7 @@ void rec_mode_finish_session(void)
     if (!wifi_is_connected() && wifi_sta_configured()) {
         wifi_sta_resume();                   // 启动失败路径：驱动被 deinit 过则内部重建
     }
-    screen_on();
+    rec_mode_screen_wake();
     s_phase = REC_PHASE_IDLE;
 }
 

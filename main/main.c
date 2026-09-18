@@ -473,19 +473,25 @@ static void badge_worker(void *arg)
     badge_ev_t ev;
     rec_phase_t prev_ph = REC_PHASE_IDLE;
     static bool s_finishing;                 // finish 重入保护（worker 单任务本无，防御）
+    static int64_t s_wake_us;                // >0 = 屏幕已唤醒（录音中按键触发）
     for (;;) {
         // 会话阶段监视（v0.4.30 worker 驱动）：IDLE 之外 250ms 快轮询。
-        // 录音收尾 → poll 内部转 SYNC；SYNC → 本 worker 驱动收尾（同步排空 +
-        // 续录判定；录音期 WiFi 已 deinit，同步期堆 ~8KB 是实测上传水位）。
         rec_mode_poll();
         rec_phase_t ph = rec_mode_phase();
         if (ph == REC_PHASE_RECORDING && prev_ph == REC_PHASE_IDLE) {
             rec_mode_screen_off();           // 屏幕归 worker 单任务拥有（LVGL 锁内）
+            s_wake_us = 0;
+        }
+        // 录音中屏幕唤醒 10s 无操作自动熄（省电）
+        if (s_wake_us > 0 && esp_timer_get_time() - s_wake_us > 10000000) {
+            if (rec_mode_phase() == REC_PHASE_RECORDING) rec_mode_screen_off();
+            s_wake_us = 0;
         }
         if (ph == REC_PHASE_SYNC && !s_finishing) {
             s_finishing = true;
             rec_mode_finish_session();       // 阻塞至排空/超时；续录则内部起新节
             s_finishing = false;
+            s_wake_us = 0;
             ph = rec_mode_phase();
         }
         if (ph == REC_PHASE_IDLE && prev_ph != REC_PHASE_IDLE) session_end_ui();
@@ -495,8 +501,6 @@ static void badge_worker(void *arg)
                 == pdFALSE) {
             if (ph == REC_PHASE_IDLE) {
                 ui_set_battery(bsp_battery_soc());   // 心跳：电量刷新（会话中跳过）
-                // 闲时兜底（每 60s 一次）：有遗留段且已连网 → 排空
-                // （排空失败/崩溃遗留的段由这里补上）
                 static int64_t s_last_idle_upload_us;
                 if (esp_timer_get_time() - s_last_idle_upload_us > 60000000) {
                     s_last_idle_upload_us = esp_timer_get_time();
@@ -504,16 +508,23 @@ static void badge_worker(void *arg)
                         rec_upload_kick();
                     }
                 }
-                // v0.4.50：刷新仪表盘（待传段数从 >0 降到 0 时文字会过时）
                 if (s_level == LVL_WS) refresh_home();
             }
             continue;
         }
         if (ph != REC_PHASE_IDLE) {
-            // 会话中（录音/同步）：只认"长按 OK = 结束"。
-            // 录音期=停录排空走同步；同步期=本节完成后不再续录。
-            if (ev == EV_OKLONG) rec_mode_stop();
-            continue;               // 其余按键全部忽略
+            // 会话中（录音/同步）：长按 OK = 结束；任意短按 = 唤醒屏幕看状态。
+            if (ev == EV_OKLONG) {
+                rec_mode_stop();
+            } else if (ev == EV_OK || ev == EV_UP || ev == EV_DOWN
+                       || ev == EV_UPLONG || ev == EV_DOWNLONG) {
+                if (s_wake_us == 0) {
+                    rec_mode_screen_wake();
+                    refresh_home();          // 显示"录音中"仪表盘
+                }
+                s_wake_us = esp_timer_get_time();  // 重置 10s 计时
+            }
+            continue;
         }
         switch (ev) {
         case EV_UP:
