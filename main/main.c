@@ -363,9 +363,11 @@ static bool start_rec_session(rec_start_mode_t mode)
     s_done_page = false;
     if (wifi_is_connected()) time_sync_from_gateway(g_cfg.gw_url);
     if (rec_mode_start(mode) != ESP_OK) {
-        ui_set_error(rec_mode_last_error());
-        vTaskDelay(pdMS_TO_TICKS(1500));
-        build_settings();
+        // v0.5.9：失败不再扔进设置页——FAIL 卡显示原因，长按OK回主页
+        ui_show_done(2, "无法启动录音", rec_mode_last_error());
+        s_level = LVL_SUBPAGE;
+        s_done_page = true;
+        ui_set_hint("长按OK返回主页");
         return false;
     }
     return true;
@@ -458,11 +460,12 @@ static void settings_activate(int sel)
 // 录音照录；挂载必须在 esp_wifi_init 完成之后（开机即挂会吃 init 所需堆 → boot loop）。
 static bool s_net_ready;
 
-static void net_lazy_setup(void)
+// recordings 挂载（FREC 裸分区，RAM≈0）。时机：esp_wifi_init 完成之后——
+// 开机即挂会吃 init 所需堆 → boot loop（v0.4.x 实测）；但绝不能等联网
+// （v0.5.8 回归：脱网时不挂载 → 录音启动被挂载守卫拒绝）。
+static void try_mount_recordings(void)
 {
-    if (s_net_ready || !wifi_is_connected()) return;
-    s_net_ready = true;
-    time_sync_from_gateway(g_cfg.gw_url);   // 连上即校时（/health server_time_ms）
+    if (frec_store_is_mounted()) return;
     ESP_LOGI(TAG, "挂载前空闲堆 %u B（最大连续块 %u B）",
              (unsigned)esp_get_free_heap_size(),
              (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
@@ -471,6 +474,14 @@ static void net_lazy_setup(void)
     } else {
         ESP_LOGI(TAG, "挂载后空闲堆 %u B", (unsigned)esp_get_free_heap_size());
     }
+}
+
+static void net_lazy_setup(void)
+{
+    if (s_net_ready || !wifi_is_connected()) return;
+    s_net_ready = true;
+    time_sync_from_gateway(g_cfg.gw_url);   // 连上即校时（/health server_time_ms）
+    try_mount_recordings();                 // 开机挂载失败时的兜底重试
     if (rec_upload_pending() > 0) rec_upload_kick();   // 脱网期间录的段立即补传
 }
 
@@ -478,8 +489,10 @@ static void badge_worker(void *arg)
 {
     if (g_cfg.ssid[0]) {
         wifi_sta_start(g_cfg.ssid, g_cfg.pass);
+        try_mount_recordings();   // wifi init 已完成：脱网也能录（v0.5.9）
         refresh_lists();          // 直接进仪表盘：联网与否不挡开机
     } else {
+        try_mount_recordings();   // 无 WiFi 凭据：堆更充裕，直接挂
         show_onboarding();   // 无凭据：不拿空凭据硬连，显示首次引导
     }
 
