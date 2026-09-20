@@ -378,7 +378,7 @@ static void session_end_ui(void)
     const char *err = rec_mode_last_error();
     int pend = rec_upload_pending();
     int el = rec_mode_elapsed_s();
-    char dur[24];
+    char dur[48];   // gcc 按 %d 最坏 11 位估 truncation，留足
     snprintf(dur, sizeof(dur), "本次会话 %02d:%02d", el / 60, el % 60);
     s_level = LVL_SUBPAGE;
     s_done_page = true;
@@ -386,7 +386,7 @@ static void session_end_ui(void)
         ui_show_done(2, "录音异常结束", err);
     } else if (pend > 0) {
         // 排空失败（网不可用）：续录已停（Flash 环保护），遗留段连网后自动补传
-        char l1[40];
+        char l1[64];
         snprintf(l1, sizeof(l1), "同步未完成 · 待传 %d 段", pend);
         ui_show_done(1, l1, "连网后自动补传（已停续录保护存储）");
     } else {
