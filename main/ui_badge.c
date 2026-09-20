@@ -163,7 +163,7 @@ static void ui_tick_cb(lv_timer_t *t)
         int cur = s_rec_base_s + (int)((now - s_rec_base_tick) / 1000);
         if (cur != s_timer_shown) {
             s_timer_shown = cur;
-            char buf[8];
+            char buf[12];
             snprintf(buf, sizeof(buf), "%02d:%02d", cur / 60, cur % 60);
             lv_label_set_text(s_timer_lbl, buf);
         }
@@ -334,7 +334,7 @@ void ui_set_home(const char *status, int color, int soc, int mv, int pending)
     // 电量（卡内右上角）
     if (soc != s_soc_shown) {
         s_soc_shown = soc;
-        char buf[8];
+        char buf[16];
         if (soc < 0) snprintf(buf, sizeof(buf), "--");
         else snprintf(buf, sizeof(buf), "%d%%", soc);
         lv_label_set_text(s_batt_lbl, buf);
@@ -347,7 +347,7 @@ void ui_set_home(const char *status, int color, int soc, int mv, int pending)
         lv_obj_set_flag(s_env, LV_OBJ_FLAG_HIDDEN, !has_pend);
         lv_obj_set_flag(s_env_n, LV_OBJ_FLAG_HIDDEN, !has_pend);
         if (has_pend) {
-            char n[8];
+            char n[12];
             snprintf(n, sizeof(n), "%d", pending);
             lv_label_set_text(s_env_n, n);
             if (s_sub1) lv_label_set_text(s_sub1, "待传段");
