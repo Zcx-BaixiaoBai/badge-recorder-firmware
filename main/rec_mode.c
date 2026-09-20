@@ -325,6 +325,9 @@ rec_phase_t rec_mode_phase(void) { return s_phase; }
 
 rec_start_mode_t rec_mode_cur_mode(void) { return s_mode; }
 
+// 当前会话已录秒数（FRAME_MS=10 → 100 帧/秒；无会话时 0）。UI 大计时器用。
+int rec_mode_elapsed_s(void) { return (int)(s_sess_frames / 100); }
+
 const char *rec_mode_last_error(void) { return s_err; }
 
 esp_err_t rec_mode_init(void)
