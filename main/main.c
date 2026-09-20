@@ -443,7 +443,7 @@ static void settings_activate(int sel)
         s_level = LVL_SUBPAGE;
         ui_set_header("关于");
         ui_show_detail("关于");
-        ui_set_state("秒忆卡 MemoSnap v0.5.5");
+        ui_set_state("秒忆卡 MemoSnap v0.5.8");
         ui_set_answer("会话制录音（30分钟一节）+ 同步上传 + 每日纪要。\n服务端：recorder-server\n（badge-recorder-firmware 仓库）。");
         ui_set_hint("长按OK返回设置");
         break;
@@ -453,33 +453,32 @@ static void settings_activate(int sel)
     }
 }
 
+// 联网后的一次性 deferred setup：校时 + 挂载 recordings + 补传 kick。
+// v0.5.8 脱网可用：开机不等网——STA 后台重连（指数退避），连上前仪表盘照用、
+// 录音照录；挂载必须在 esp_wifi_init 完成之后（开机即挂会吃 init 所需堆 → boot loop）。
+static bool s_net_ready;
+
+static void net_lazy_setup(void)
+{
+    if (s_net_ready || !wifi_is_connected()) return;
+    s_net_ready = true;
+    time_sync_from_gateway(g_cfg.gw_url);   // 连上即校时（/health server_time_ms）
+    ESP_LOGI(TAG, "挂载前空闲堆 %u B（最大连续块 %u B）",
+             (unsigned)esp_get_free_heap_size(),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+    if (frec_store_mount() != ESP_OK) {
+        ESP_LOGW(TAG, "recordings 分区挂载失败（录音不可用，其余功能不受影响）");
+    } else {
+        ESP_LOGI(TAG, "挂载后空闲堆 %u B", (unsigned)esp_get_free_heap_size());
+    }
+    if (rec_upload_pending() > 0) rec_upload_kick();   // 脱网期间录的段立即补传
+}
+
 static void badge_worker(void *arg)
 {
     if (g_cfg.ssid[0]) {
         wifi_sta_start(g_cfg.ssid, g_cfg.pass);
-        ui_set_busy("连接 WiFi…");
-        if (!wifi_wait_connected(30)) {
-            ui_set_busy(NULL);
-            ui_set_header("秒忆卡");
-            ui_show_detail("WiFi 连不上");
-            ui_set_error("检查 WiFi 名称/密码");
-            ui_set_hint("长按OK进设置");
-            s_level = LVL_WS;
-        } else {
-            ui_set_busy(NULL);
-            time_sync_from_gateway(g_cfg.gw_url);   // 连上即校时（/health server_time_ms）
-            // WiFi 已连、堆最低点已过后挂载 recordings（实测：开机挂载会吃掉
-            // esp_wifi_init 所需的堆 → boot loop。挂载开销以 heap 日志为准）
-            ESP_LOGI(TAG, "挂载前空闲堆 %u B（最大连续块 %u B）",
-                     (unsigned)esp_get_free_heap_size(),
-                     (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
-            if (frec_store_mount() != ESP_OK) {
-                ESP_LOGW(TAG, "recordings 分区挂载失败（录音不可用，其余功能不受影响）");
-            } else {
-                ESP_LOGI(TAG, "挂载后空闲堆 %u B", (unsigned)esp_get_free_heap_size());
-            }
-            refresh_lists();
-        }
+        refresh_lists();          // 直接进仪表盘：联网与否不挡开机
     } else {
         show_onboarding();   // 无凭据：不拿空凭据硬连，显示首次引导
     }
@@ -511,9 +510,11 @@ static void badge_worker(void *arg)
         if (ph == REC_PHASE_IDLE && prev_ph != REC_PHASE_IDLE) session_end_ui();
         prev_ph = ph;
 
-        if (xQueueReceive(s_evq, &ev, pdMS_TO_TICKS(ph == REC_PHASE_IDLE ? 15000 : 250))
+        // v0.5.8：IDLE 心跳 15s→5s（联网 deferred setup 与电量刷新更跟手）
+        if (xQueueReceive(s_evq, &ev, pdMS_TO_TICKS(ph == REC_PHASE_IDLE ? 5000 : 250))
                 == pdFALSE) {
             if (ph == REC_PHASE_IDLE) {
+                net_lazy_setup();                    // 连上网后补：校时+挂载+补传
                 ui_set_battery(bsp_battery_soc());   // 心跳：电量刷新（会话中跳过）
                 static int64_t s_last_idle_upload_us;
                 if (esp_timer_get_time() - s_last_idle_upload_us > 60000000) {

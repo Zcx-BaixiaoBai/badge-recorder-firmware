@@ -45,6 +45,8 @@ static void retry_connect_cb(void *arg)
     if (s_drv_up) esp_wifi_connect();
 }
 
+static int s_fail;   // 连续失败次数（指数退避用；连上清零）
+
 static void schedule_reconnect(void)
 {
     if (!s_retry_timer) {
@@ -54,8 +56,13 @@ static void schedule_reconnect(void)
         };
         if (esp_timer_create(&t, &s_retry_timer) != ESP_OK) return;
     }
+    // v0.5.8：指数退避 2/4/8/16/30s 封顶——脱网全天录音场景每 2s 探一次太耗电
+    int shift = s_fail > 4 ? 4 : s_fail;
+    int delay_s = (2 << shift) > 30 ? 30 : (2 << shift);
+    s_fail++;
     esp_timer_stop(s_retry_timer);
-    esp_timer_start_once(s_retry_timer, 2000000);   // 2s 退避
+    esp_timer_start_once(s_retry_timer, (int64_t)delay_s * 1000000);
+    ESP_LOGW(TAG, "断线，%ds 后重连", delay_s);
 }
 
 static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data)
@@ -66,11 +73,11 @@ static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data)
     } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
         xEventGroupClearBits(s_eg, BIT_IP);
         if (!s_drv_up) return;            // deinit 竞态：驱动已卸，勿重连
-        ESP_LOGW(TAG, "断线，2s 后重连");
-        schedule_reconnect();             // 非阻塞：esp_timer 定时重连
+        schedule_reconnect();             // 非阻塞：esp_timer 定时重连（日志含退避秒数）
     } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *ev = (ip_event_got_ip_t *)data;
         ESP_LOGI(TAG, "已连接, IP=" IPSTR, IP2STR(&ev->ip_info.ip));
+        s_fail = 0;
         xEventGroupSetBits(s_eg, BIT_IP);
     }
 }
