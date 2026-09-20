@@ -522,7 +522,8 @@ static void badge_worker(void *arg)
                         rec_upload_kick();
                     }
                 }
-                if (s_level == LVL_WS) refresh_home();
+                // v0.5.6：引导页在显时不刷（否则 15s 心跳把引导抹成仪表盘）
+                if (s_level == LVL_WS && !s_onboarding) refresh_home();
             } else {
                 // 会话中：每 2s 刷仪表盘（电量/待传/同步进度；大计时器 UI 自走，
                 // 这里只校准基准）。ui_show_home 幂等，不会重建界面。
