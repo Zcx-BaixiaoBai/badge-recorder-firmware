@@ -37,3 +37,5 @@ void ui_set_home(const char *status, int color, int soc, int mv, int pending);
 // 录音态补充信息：模式（0 单次/1 连续）+ 已录秒数（大计时器基准）。
 // 仅 REC 态有意义；UI 内部按秒自走，无需高频调用。
 void ui_set_recinfo(int mode_auto, int elapsed_s);
+// 会话结束页（橙卡 DONE/WAIT/FAIL）：kind 0=同步完成 1=待传遗留 2=异常结束。
+void ui_show_done(int kind, const char *line1, const char *line2);

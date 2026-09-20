@@ -43,6 +43,7 @@ typedef enum { EV_UP = 0, EV_DOWN, EV_OK, EV_OKLONG, EV_UPLONG, EV_DOWNLONG } ba
 
 static QueueHandle_t s_evq;
 static level_t s_level = LVL_WS;
+static bool s_done_page;       // 会话结束页在显（长按OK回主页）
 static gw_ws_t   s_ws[GW_MAX_WS];
 static int s_ws_n;
 static gw_sess_t s_sess[32];
@@ -236,9 +237,15 @@ static void refresh_home(void)
         ui_set_home("同步中…", HOME_C_ACCENT, soc, mv, pend);
         ui_set_hint("正在上传录音，请稍候…");
     } else if (ph == REC_PHASE_RECORDING) {
-        ui_set_home("录音中", HOME_C_ACCENT, soc, mv, pend);
-        ui_set_recinfo((int)rec_mode_cur_mode(), rec_mode_elapsed_s());
-        ui_set_hint("长按OK 结束录音");
+        if (rec_mode_stop_requested()) {
+            // v0.5.5：长按 OK 后立即反馈"收尾中"，不等上传
+            ui_set_home("收尾中…", HOME_C_ACCENT, soc, mv, pend);
+            ui_set_hint("正在封装录音，随后同步…");
+        } else {
+            ui_set_home("录音中", HOME_C_ACCENT, soc, mv, pend);
+            ui_set_recinfo((int)rec_mode_cur_mode(), rec_mode_elapsed_s());
+            ui_set_hint("长按OK 结束录音");
+        }
     } else if (pend > 0) {
         ui_set_home("待传", HOME_C_WARN, soc, mv, pend);
         ui_set_hint("连网后自动补传");
@@ -337,6 +344,7 @@ static void build_settings(void)
 
 static void back_to_main(void)
 {
+    s_done_page = false;
     if (s_onboarding && !g_cfg.ssid[0]) {
         show_onboarding();
     } else {
@@ -352,6 +360,7 @@ static void back_to_main(void)
 // 后续由 rec_mode_poll / rec_mode_finish_session 驱动。
 static bool start_rec_session(rec_start_mode_t mode)
 {
+    s_done_page = false;
     if (wifi_is_connected()) time_sync_from_gateway(g_cfg.gw_url);
     if (rec_mode_start(mode) != ESP_OK) {
         ui_set_error(rec_mode_last_error());
@@ -363,26 +372,27 @@ static bool start_rec_session(rec_start_mode_t mode)
 }
 
 // 会话结束收尾 UI（worker 检测 phase 回到 IDLE 时调用；宿主任务已亮屏）。
+// v0.5.5：橙卡 DONE/WAIT/FAIL 结束页（替代旧 detail 黑页）。
 static void session_end_ui(void)
 {
     const char *err = rec_mode_last_error();
     int pend = rec_upload_pending();
+    int el = rec_mode_elapsed_s();
+    char dur[24];
+    snprintf(dur, sizeof(dur), "本次会话 %02d:%02d", el / 60, el % 60);
     s_level = LVL_SUBPAGE;
-    ui_set_header("录音");
+    s_done_page = true;
     if (err[0]) {
-        ui_show_detail("录音异常结束");
-        ui_set_error(err);
-        ui_set_state(pend > 0 ? "已录部分留本机，连网后自动补传" : "已收尾");
+        ui_show_done(2, "录音异常结束", err);
     } else if (pend > 0) {
         // 排空失败（网不可用）：续录已停（Flash 环保护），遗留段连网后自动补传
-        ui_show_detail("同步未完成");
-        ui_set_error("网络不可用");
-        ui_set_state("已停续录（存储保护），连网后自动补传");
+        char l1[40];
+        snprintf(l1, sizeof(l1), "同步未完成 · 待传 %d 段", pend);
+        ui_show_done(1, l1, "连网后自动补传（已停续录保护存储）");
     } else {
-        ui_show_detail("同步完成");
-        ui_set_state("可再次录音");
+        ui_show_done(0, "同步完成 · 可再次录音", dur);
     }
-    ui_set_hint("长按OK返回设置");
+    ui_set_hint("长按OK返回主页");
 }
 
 static void settings_activate(int sel)
@@ -433,7 +443,7 @@ static void settings_activate(int sel)
         s_level = LVL_SUBPAGE;
         ui_set_header("关于");
         ui_show_detail("关于");
-        ui_set_state("秒忆卡 MemoSnap v0.5.0");
+        ui_set_state("秒忆卡 MemoSnap v0.5.5");
         ui_set_answer("会话制录音（30分钟一节）+ 同步上传 + 每日纪要。\n服务端：recorder-server\n（badge-recorder-firmware 仓库）。");
         ui_set_hint("长按OK返回设置");
         break;
@@ -528,6 +538,7 @@ static void badge_worker(void *arg)
             // 会话中（录音/同步）：长按 OK = 结束；任意短按 = 唤醒屏幕看状态。
             if (ev == EV_OKLONG) {
                 rec_mode_stop();
+                refresh_home();          // 立即切"收尾中"，不等 2s 周期刷
             } else if (ev == EV_OK || ev == EV_UP || ev == EV_DOWN
                        || ev == EV_UPLONG || ev == EV_DOWNLONG) {
                 if (s_wake_us == 0) {
@@ -595,6 +606,9 @@ static void badge_worker(void *arg)
                     ui_set_busy("进入配网模式…");
                     vTaskDelay(pdMS_TO_TICKS(300));
                     esp_restart();
+                } else if (s_done_page) {
+                    s_done_page = false;
+                    back_to_main();            // 结束页返回主页
                 } else {
                     build_settings();          // 子页返回设置菜单
                 }

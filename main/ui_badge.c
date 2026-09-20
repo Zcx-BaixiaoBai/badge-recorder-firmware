@@ -50,7 +50,9 @@ LV_FONT_DECLARE(lv_font_ai_passport_14);
 #define ROW_H     36
 
 // 卡心状态
-enum { HS_NONE = -1, HS_IDLE = 0, HS_REC = 1, HS_SYNC = 2 };
+enum { HS_NONE = -1, HS_IDLE = 0, HS_REC = 1, HS_SYNC = 2, HS_DONE = 3 };
+
+static void body_clear(void);   // 前向声明（ui_show_home 要清二级页残留）
 
 static lv_obj_t *s_scr;
 // 顶栏（二级页；首页隐藏）
@@ -66,6 +68,7 @@ static lv_obj_t *s_card_hint;        // 卡内底部按键提示
 static lv_obj_t *s_mid;              // 卡心容器（按状态重建）
 static lv_obj_t *s_timer_lbl;        // REC：大计时器
 static lv_obj_t *s_sub1, *s_sub2;    // 状态小注行
+static lv_obj_t *s_done_check, *s_done_excl, *s_done_word;   // DONE 页构件
 static int  s_home_state = HS_NONE;
 // 计时/电量缓存（避免无谓重绘）
 static int  s_rec_base_s = -1;
@@ -234,6 +237,7 @@ static void home_build(int state)
     s_home_state = state;
     lv_obj_clean(s_mid);
     s_timer_lbl = s_sub1 = s_sub2 = NULL;
+    s_done_check = s_done_excl = s_done_word = NULL;
     lv_obj_add_flag(s_env, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(s_env_n, LV_OBJ_FLAG_HIDDEN);
 
@@ -267,6 +271,41 @@ static void home_build(int state)
         lv_obj_set_style_text_opa(s_sub1, LV_OPA_80, 0);
         lv_obj_set_style_text_align(s_sub1, LV_TEXT_ALIGN_CENTER, 0);
         lv_obj_set_width(s_sub1, 196);
+    } else if (state == HS_DONE) {
+        // 会话结束页：圆环 + 对勾/叹号 + 拉丁大字 + 两行中文小注
+        lv_label_set_text(s_chip_txt, "MEMOSNAP");
+        lv_obj_set_style_text_letter_space(s_chip_txt, 3, 0);
+        lv_obj_add_flag(s_chip_dot, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_t *ring = lv_obj_create(s_mid);
+        lv_obj_set_size(ring, 44, 44);
+        lv_obj_set_style_bg_opa(ring, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(ring, 3, 0);
+        lv_obj_set_style_border_color(ring, lv_color_hex(C_WHITE), 0);
+        lv_obj_set_style_radius(ring, 22, 0);
+        lv_obj_set_style_pad_all(ring, 0, 0);
+        lv_obj_remove_flag(ring, LV_OBJ_FLAG_SCROLLABLE);
+        static const lv_point_precise_t chk[3] = { {13, 23}, {20, 30}, {32, 14} };
+        s_done_check = lv_line_create(ring);
+        lv_obj_set_size(s_done_check, 44, 44);
+        lv_line_set_points(s_done_check, chk, 3);
+        lv_obj_set_style_line_color(s_done_check, lv_color_hex(C_WHITE), 0);
+        lv_obj_set_style_line_width(s_done_check, 4, 0);
+        lv_obj_set_style_line_rounded(s_done_check, true, 0);
+        s_done_excl = mk_label(ring, "!", C_WHITE, FONT_LAT_M);
+        lv_obj_center(s_done_excl);
+        s_done_word = mk_label(s_mid, "DONE", C_WHITE, FONT_LAT_M);
+        lv_obj_set_style_text_letter_space(s_done_word, 5, 0);
+        lv_obj_set_style_text_align(s_done_word, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_set_width(s_done_word, 196);
+        s_sub1 = mk_label(s_mid, "", C_WHITE, FONT_CJK);
+        lv_obj_set_style_text_opa(s_sub1, LV_OPA_80, 0);
+        lv_obj_set_style_text_align(s_sub1, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_set_width(s_sub1, 196);
+        s_sub2 = mk_label(s_mid, "", C_WHITE, FONT_CJK);
+        lv_obj_set_style_text_opa(s_sub2, LV_OPA_60, 0);
+        lv_obj_set_style_text_align(s_sub2, LV_TEXT_ALIGN_CENTER, 0);
+        lv_label_set_long_mode(s_sub2, LV_LABEL_LONG_WRAP);
+        lv_obj_set_width(s_sub2, 196);
     } else {
         lv_label_set_text(s_chip_txt, "MEMOSNAP");
         lv_obj_set_style_text_letter_space(s_chip_txt, 3, 0);
@@ -316,6 +355,7 @@ static void show_chrome(bool home)
 void ui_show_home(void)
 {
     lock();
+    body_clear();              // 设置/子页残留的列表必须销毁（v0.5.5：回首页 bug）
     show_chrome(true);
     if (s_home_state == HS_NONE) home_build(HS_IDLE);
     unlock();
@@ -325,8 +365,10 @@ void ui_set_home(const char *status, int color, int soc, int mv, int pending)
 {
     (void)color; (void)mv;
     int state = HS_IDLE;
+    bool ending = false;
     if (status && strstr(status, "录音")) state = HS_REC;
     else if (status && strstr(status, "同步")) state = HS_SYNC;
+    else if (status && strstr(status, "收尾")) { state = HS_SYNC; ending = true; }
 
     lock();
     if (state != s_home_state) home_build(state);
@@ -357,10 +399,29 @@ void ui_set_home(const char *status, int color, int soc, int mv, int pending)
             if (s_sub2) lv_label_set_text(s_sub2, "全天候静默录音");
         }
     } else if (state == HS_SYNC && s_sub1) {
-        char buf[40];
-        snprintf(buf, sizeof(buf), "同步中 · 待传 %d 段", pending);
-        lv_label_set_text(s_sub1, buf);
+        if (ending) {
+            lv_label_set_text(s_sub1, "收尾中 · 正在封装录音");
+        } else {
+            char buf[40];
+            snprintf(buf, sizeof(buf), "同步中 · 待传 %d 段", pending);
+            lv_label_set_text(s_sub1, buf);
+        }
     }
+    unlock();
+}
+
+// 会话结束页（kind: 0=同步完成 1=待传遗留 2=异常结束）
+void ui_show_done(int kind, const char *line1, const char *line2)
+{
+    lock();
+    body_clear();
+    show_chrome(true);
+    if (s_home_state != HS_DONE) home_build(HS_DONE);
+    if (s_done_check) lv_obj_set_flag(s_done_check, LV_OBJ_FLAG_HIDDEN, kind != 0);
+    if (s_done_excl)  lv_obj_set_flag(s_done_excl,  LV_OBJ_FLAG_HIDDEN, kind == 0);
+    if (s_done_word)  lv_label_set_text(s_done_word, kind == 0 ? "DONE" : (kind == 1 ? "WAIT" : "FAIL"));
+    if (s_sub1) lv_label_set_text(s_sub1, line1 && line1[0] ? line1 : "");
+    if (s_sub2) lv_label_set_text(s_sub2, line2 && line2[0] ? line2 : "");
     unlock();
 }
 
@@ -443,6 +504,9 @@ void ui_set_busy(const char *msg)
         lv_label_set_long_mode(s_busy_lbl, LV_LABEL_LONG_WRAP);
         lv_obj_set_width(s_busy_lbl, 200);
         lv_obj_set_style_text_align(s_busy_lbl, LV_TEXT_ALIGN_CENTER, 0);
+        // 开机 morph 期间来的 busy（连 WiFi）不能挡住动画：morph 层提到最前，
+        // 淡出删除后 busy 自然露出（v0.5.5）
+        if (s_boot) lv_obj_move_foreground(s_boot);
     } else if (s_busy_lbl) {
         lv_label_set_text(s_busy_lbl, msg);
     }
@@ -647,7 +711,7 @@ void ui_init(void)
     lv_obj_set_width(s_hdr_title, 140);
     lv_obj_set_pos(s_hdr_title, 12, 10);
     s_hdr_mute = mk_label(s_scr, "静音", C_WARN, FONT_CJK);
-    lv_obj_set_pos(s_hdr_mute, 176, 10);
+    lv_obj_align(s_hdr_mute, LV_ALIGN_TOP_RIGHT, -56, 10);   // 电量右对齐占 -12..-52，静音让到 -56 左
     lv_obj_add_flag(s_hdr_mute, LV_OBJ_FLAG_HIDDEN);
     s_hdr_batt = mk_label(s_scr, "--", C_DIM, FONT_LAT_S);
     lv_obj_set_style_text_align(s_hdr_batt, LV_TEXT_ALIGN_RIGHT, 0);
