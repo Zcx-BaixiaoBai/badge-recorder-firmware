@@ -172,9 +172,9 @@ static void ui_tick_cb(lv_timer_t *t)
 
 // ---------- 开机 morph 动画 ----------
 
-static void boot_exec(lv_anim_t *a, int32_t v)
+static void boot_exec(void *var, int32_t v)
 {
-    lv_obj_t *g = a->var;
+    lv_obj_t *g = (lv_obj_t *)var;
     if (v < 400) {                       // 横线生长
         int k = v;
         lv_obj_set_size(g, 10 + 46 * k / 400, 5);
@@ -197,9 +197,9 @@ static void boot_exec(lv_anim_t *a, int32_t v)
     }
 }
 
-static void boot_fade_exec(lv_anim_t *a, int32_t v)
+static void boot_fade_exec(void *var, int32_t v)
 {
-    lv_obj_set_style_opa((lv_obj_t *)a->var, (lv_opa_t)v, 0);
+    lv_obj_set_style_opa((lv_obj_t *)var, (lv_opa_t)v, 0);
 }
 
 static void boot_done(lv_anim_t *a)
@@ -209,6 +209,11 @@ static void boot_done(lv_anim_t *a)
 }
 
 // ---------- 首页（橙卡仪表盘） ----------
+
+static void dot_opa_exec(void *var, int32_t v)
+{
+    lv_obj_set_style_bg_opa((lv_obj_t *)var, (lv_opa_t)v, 0);
+}
 
 static void pulse_dot(lv_obj_t *dot)
 {
@@ -221,11 +226,6 @@ static void pulse_dot(lv_obj_t *dot)
     lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
     lv_anim_set_exec_cb(&a, dot_opa_exec);
     lv_anim_start(&a);
-}
-
-static void dot_opa_exec(lv_anim_t *a, int32_t v)
-{
-    lv_obj_set_style_bg_opa((lv_obj_t *)a->var, (lv_opa_t)v, 0);
 }
 
 // 卡心按状态重建；chip/角标同步
@@ -435,7 +435,7 @@ void ui_set_busy(const char *msg)
         lv_obj_set_size(sp, 34, 34);
         lv_obj_set_style_arc_width(sp, 3, LV_PART_MAIN);
         lv_obj_set_style_arc_color(sp, lv_color_hex(C_WHITE), LV_PART_MAIN);
-        lv_obj_set_style_arc_opa(sp, LV_OPA_25, LV_PART_MAIN);
+        lv_obj_set_style_arc_opa(sp, LV_OPA_30, LV_PART_MAIN);
         lv_obj_set_style_arc_width(sp, 3, LV_PART_INDICATOR);
         lv_obj_set_style_arc_color(sp, lv_color_hex(C_WHITE), LV_PART_INDICATOR);
 
@@ -718,7 +718,7 @@ void ui_init(void)
     lv_obj_remove_flag(s_mid, LV_OBJ_FLAG_SCROLLABLE);
     // 卡内底部按键提示
     s_card_hint = mk_label(s_card, "", C_WHITE, FONT_CJK);
-    lv_obj_set_style_text_opa(s_card_hint, LV_OPA_75, 0);
+    lv_obj_set_style_text_opa(s_card_hint, LV_OPA_80, 0);
     lv_label_set_long_mode(s_card_hint, LV_LABEL_LONG_DOT);
     lv_obj_set_width(s_card_hint, 204);
     lv_obj_set_style_text_align(s_card_hint, LV_TEXT_ALIGN_CENTER, 0);
