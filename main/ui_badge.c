@@ -719,7 +719,7 @@ void ui_init(void)
     // 卡内底部按键提示
     s_card_hint = mk_label(s_card, "", C_WHITE, FONT_CJK);
     lv_obj_set_style_text_opa(s_card_hint, LV_OPA_80, 0);
-    lv_label_set_long_mode(s_card_hint, LV_LABEL_LONG_DOT);
+    lv_label_set_long_mode(s_card_hint, LV_LABEL_LONG_WRAP);   // 三键提示较长，换行不截断
     lv_obj_set_width(s_card_hint, 204);
     lv_obj_set_style_text_align(s_card_hint, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_align(s_card_hint, LV_ALIGN_BOTTOM_MID, 0, -12);
