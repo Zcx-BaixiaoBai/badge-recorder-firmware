@@ -237,6 +237,7 @@ static void refresh_home(void)
         ui_set_hint("正在上传录音，请稍候…");
     } else if (ph == REC_PHASE_RECORDING) {
         ui_set_home("录音中", HOME_C_ACCENT, soc, mv, pend);
+        ui_set_recinfo((int)rec_mode_cur_mode(), rec_mode_elapsed_s());
         ui_set_hint("长按OK 结束录音");
     } else if (pend > 0) {
         ui_set_home("待传", HOME_C_WARN, soc, mv, pend);
@@ -432,7 +433,7 @@ static void settings_activate(int sel)
         s_level = LVL_SUBPAGE;
         ui_set_header("关于");
         ui_show_detail("关于");
-        ui_set_state("秒忆卡 MemoSnap v0.4.55");
+        ui_set_state("秒忆卡 MemoSnap v0.5.0");
         ui_set_answer("会话制录音（30分钟一节）+ 同步上传 + 每日纪要。\n服务端：recorder-server\n（badge-recorder-firmware 仓库）。");
         ui_set_hint("长按OK返回设置");
         break;
@@ -512,6 +513,14 @@ static void badge_worker(void *arg)
                     }
                 }
                 if (s_level == LVL_WS) refresh_home();
+            } else {
+                // 会话中：每 2s 刷仪表盘（电量/待传/同步进度；大计时器 UI 自走，
+                // 这里只校准基准）。ui_show_home 幂等，不会重建界面。
+                static int64_t s_last_sess_ui_us;
+                if (esp_timer_get_time() - s_last_sess_ui_us > 2000000) {
+                    s_last_sess_ui_us = esp_timer_get_time();
+                    if (s_level == LVL_WS) refresh_home();
+                }
             }
             continue;
         }

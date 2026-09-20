@@ -20,6 +20,10 @@ esp_err_t audio_rec_read(uint8_t *buf, size_t want, size_t *got, int timeout_ms)
 void audio_rec_stop(void);      // 正常结束（缓冲余量仍可读完）
 void audio_rec_cancel(void);    // 取消（采集任务尽快退出，数据作废）
 
+// 实时音量 0..100（采集块 RMS 压缩值，峰值保持+读侧衰减）。
+// 非录音期迅速衰减到 0。UI 波形动画用；任意任务可读。
+int audio_pipe_level(void);
+
 // ---- WAV 流式播放器（网关 TTS 返回标准 WAV，边下边播）----
 // 用法：audio_play_begin() → 多次 audio_play_feed(收到的字节) → 无需显式结束。
 void audio_play_begin(void);

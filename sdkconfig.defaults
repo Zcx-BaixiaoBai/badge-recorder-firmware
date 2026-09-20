@@ -22,6 +22,8 @@ CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
 CONFIG_LV_COLOR_DEPTH_16=y
 CONFIG_LV_FONT_MONTSERRAT_14=y
 CONFIG_LV_FONT_MONTSERRAT_20=y
+# v0.5.0 UI 重绘：录音大计时器用 36px 数字
+CONFIG_LV_FONT_MONTSERRAT_36=y
 # LVGL 内置 malloc 池大小(KB)。它是独立静态区、不与系统堆共享,配大了会白白占用 RAM。
 # 本产品界面为文本列表；12KB 够用。RAM 预算（v0.4.21 实测）：
 #   编码器 25KB + 流缓冲 8KB 持有后 WiFi init 需 ~37KB，池 16KB 时差 5KB 致 boot loop。

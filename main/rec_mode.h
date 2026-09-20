@@ -50,6 +50,7 @@ esp_err_t rec_mode_stop(void);
 bool rec_mode_active(void);            // 会话进行中（录音或同步，任一）
 rec_phase_t rec_mode_phase(void);      // 当前阶段
 rec_start_mode_t rec_mode_cur_mode(void);
+int rec_mode_elapsed_s(void);          // 当前会话已录秒数（UI 计时器）
 
 // 最近一次会话的错误文案（无错为空串）。
 const char *rec_mode_last_error(void);

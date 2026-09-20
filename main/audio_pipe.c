@@ -49,6 +49,7 @@ esp_err_t audio_init(void)
 // 隔离在独立采集任务里，worker 通过流缓冲消费且带超时——codec 万一挂起，
 // 卡死的只是采集任务，worker 2.5s 超时报错退出，界面永不僵死。
 
+static volatile int  s_level;        // 实时音量 0..100（UI 波形用）
 static volatile bool s_cap_run;      // 采集任务运行许可
 static volatile bool s_cap_stop;    // 正常停止（排空后结束）
 static volatile bool s_cap_cancel;   // 取消
@@ -79,6 +80,16 @@ static void cap_task(void *arg)
             break;
         }
         if (warm > 0) { warm--; continue; }
+        // 音量抽头：本块 RMS → 0..100（人声 rms 约 300..6000 → /60 压缩）。
+        // 峰值保持：新块更大立即顶上去，否则一阶平滑回落。
+        {
+            const int16_t *p = (const int16_t *)s_cap_chunk;
+            int32_t ss = 0;
+            for (int i = 0; i < REC_CHUNK / 2; i++) ss += (int32_t)p[i] * p[i];
+            int pct = (int)(sqrtf((float)ss / (REC_CHUNK / 2)) / 60.0f);
+            if (pct > 100) pct = 100;
+            s_level = pct > s_level ? pct : (s_level * 3 + pct) / 4;
+        }
         if (xStreamBufferSend(s_rec_sb, s_cap_chunk, sizeof(s_cap_chunk),
                               pdMS_TO_TICKS(800)) != sizeof(s_cap_chunk))
             ESP_LOGW(TAG, "capture: 流缓冲满，丢块");   // 上传太慢，丢弃保活
@@ -135,6 +146,13 @@ esp_err_t audio_rec_read(uint8_t *buf, size_t want, size_t *got, int timeout_ms)
     if (!s_cap_alive && xStreamBufferIsEmpty(s_rec_sb))     // 已停止且排空
         return ESP_OK;                                      // *got=0 = 正常结束
     return ESP_ERR_TIMEOUT;                                 // 超时无数据=麦克风挂起
+}
+
+int audio_pipe_level(void)
+{
+    int v = s_level;
+    s_level = (v * 7) / 8;   // 读侧衰减：无新采集块时波形快速落底
+    return v;
 }
 
 void audio_rec_stop(void)   { s_cap_stop = true; }

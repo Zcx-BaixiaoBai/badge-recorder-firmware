@@ -31,6 +31,9 @@ void ui_set_answer(const char *text);      // 回复正文（可滚动）
 void ui_scroll_answer(int delta_pixels);
 void ui_set_error(const char *msg);        // 状态行变红显示错误
 
-// 录音仪表盘（v0.4.51：录音产品首页——大状态+信息卡，无回复框）
+// 录音仪表盘（v0.5.0：橙卡+波形动画首页；状态由 status 文案解析）
 void ui_show_home(void);
 void ui_set_home(const char *status, int color, int soc, int mv, int pending);
+// 录音态补充信息：模式（0 单次/1 连续）+ 已录秒数（大计时器基准）。
+// 仅 REC 态有意义；UI 内部按秒自走，无需高频调用。
+void ui_set_recinfo(int mode_auto, int elapsed_s);
