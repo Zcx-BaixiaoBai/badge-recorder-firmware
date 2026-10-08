@@ -1,7 +1,11 @@
-# badge-recorder-firmware —— 工牌静默录音固件
+# 秒忆卡 MemoSnap · 工牌静默录音固件（badge-recorder-firmware）
 
-AI Passport 工牌（ESP32-C3 / ES8311 / 8MB Flash 无 PSRAM / 520mAh）的**录音产品线**固件。
-设计文档：`../../design/badge-recorder-daily-digest-design.md`；服务端：`../../recorder-server/`。
+AI Passport 工牌（ESP32-C3 / ES8311 / 8MB Flash 无 PSRAM / 520mAh）的**录音产品线**固件：
+会话制熄屏录音（30 分钟一节、单次/自动续录双模式）、Opus 16kbps 编码、FREC v3
+段存储（裸分区环形）、无线电占空比上传、脱网可用（离线录音+联网补传）。
+
+服务端（转写/分离/声纹/纪要/日报/WebUI）：
+<https://github.com/Zcx-BaixiaoBai/memosnap-server>（设计文档在该仓库 `docs/design.md`）。
 
 > 本仓库与 ZCode 工牌仓库（zcode-badge）**分离**：录音产品独立演进。
 > 两者共享 BSP / UI 框架 / 配网等平台代码（同硬件），ZCode 远控功能随平台携带、
